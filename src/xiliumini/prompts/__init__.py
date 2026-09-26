@@ -1,4 +1,15 @@
-from xiliumini.prompts.analysis import ANALYSIS_SYSTEM_PROMPT
-from xiliumini.prompts.main import ACTOR_PROMPT
+from xiliumini.prompts.task1 import (
+    ACTOR_NODE_PROMPT,
+    ANALYSIS_SYSTEM_PROMPT,
+    FINAL_PROMPT,
+    PLANNER_NODE_PROMPT,
+    VERIFIER_NODE_PROMPT,
+)
 
-__all__ = ["ACTOR_PROMPT", "ANALYSIS_SYSTEM_PROMPT"]
+__all__ = [
+    "ACTOR_NODE_PROMPT",
+    "ANALYSIS_SYSTEM_PROMPT",
+    "FINAL_PROMPT",
+    "PLANNER_NODE_PROMPT",
+    "VERIFIER_NODE_PROMPT",
+]

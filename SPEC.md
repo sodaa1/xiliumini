@@ -29,9 +29,13 @@ xiliumini/
 │   ├── events.py
 │   ├── runtime.py
 │   ├── prompts/
+│   │   └── task1.py
+│   ├── graph/
+│   │   ├── state.py
+│   │   ├── nodes.py
+│   │   └── workflow.py
 │   ├── core/
-│   │   ├── agent.py
-│   │   └── state.py
+│   │   └── agent.py
 │   ├── agents/
 │   │   └── analysis.py
 │   ├── providers/openai_compatible.py
@@ -56,9 +60,9 @@ xiliumini/
 ## 3. 架构
 
 ~~~text
-Typer CLI → Runtime → core/agent.py → Provider
-                    │       │
-                    │       └→ workspace tools → analysis_agent
+Typer CLI → Runtime → core/agent.py → LangGraph → Provider
+                    │                      │
+                    │                      └→ bounded workspace tools
                     └→ per-session workspace
 ~~~
 
@@ -74,22 +78,22 @@ Typer CLI → Runtime → core/agent.py → Provider
 
 ### Runtime 事件
 
-- TokenEvent(text)
-- ToolStartedEvent(name, call_id)
-- ToolFinishedEvent(name, call_id, duration_ms, ok)
+- PlannerEvent(todo)
+- ActorEvent(result, attempt)
+- VerifierEvent(passed, reason, attempt)
+- ProgressEvent(stage, message)
 - FinalEvent(text, session_id)
 - ErrorEvent(code, message)
 
 ### LangGraph
 
-`RuntimeState` 包含 messages、session_id、workspace 和 step_count。
+`GraphState` 包含 task、todo、result、execution、graph_state、verification、
+attempt、max_attempts、final_answer、session_id 和 workspace。
 
-流程为 START → actor → tools → actor → END：
-
-1. actor 使用 `SystemMessage(ACTOR_PROMPT) + HumanMessage(task)` 开始调用模型。
-2. 有 Tool Call 时进入 tools，否则结束。
-3. Tool Result 追加到消息后返回 agent。
-4. 达到 max_steps 时停止并返回明确提示。
+流程为 START → Planner → Actor → Verifier。Verifier 通过或次数耗尽时进入
+Final，否则返回 Actor；Planner 只运行一次。Final 不调用模型，只格式化验证状态。
+`core/agent.py` 同时消费 `stream_mode=["updates", "custom"]`，前者映射节点完成
+事件，后者映射动作级进度。
 
 ### 工具
 
@@ -100,7 +104,10 @@ Typer CLI → Runtime → core/agent.py → Provider
 - file_write(path, content)：在当前 session 工作区内原子写入 UTF-8 文本。
 - file_edit(path, old_string, new_string, replace_all)：在工作区内执行受控文本替换。
 - grep(pattern, path, glob, max_results)：在工作区内执行有界正则搜索。
+- command(argv)：仅允许 `python <相对脚本.py>` 或 `python -m pytest`，固定工作区、
+  禁止 shell、`python -c`、任意模块、绝对/穿越路径与命令连接符，并限制超时和输出。
 - 文件工具只接受相对路径，并拒绝目录穿越、绝对路径、盘符、UNC 和符号链接逃逸。
+- 命令限制不是 OS 沙箱；生成的 Python 仍拥有当前进程的用户权限。
 
 ### 会话与 Trace
 
@@ -113,7 +120,8 @@ Typer CLI → Runtime → core/agent.py → Provider
 ## 5. CLI 行为
 
 - doctor：检查 Python 版本、配置、数据目录和模型初始化。
-- ask：创建会话并流式回答，支持 --no-stream。
+- ask：创建会话并显示 Planner、Actor、Verifier、Final，支持 `--max-attempts`
+  （默认 3）和 `--no-stream`。
 - chat：启动或恢复会话；支持 /help、/status、/new、/exit。
 - sessions：按更新时间倒序显示会话。
 - 退出码：成功 0、运行错误 1、配置错误 2。

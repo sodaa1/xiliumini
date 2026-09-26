@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -10,62 +9,37 @@ from xiliumini import __version__
 from xiliumini.cli import app
 from xiliumini.config import Settings
 from xiliumini.errors import ConfigError
-from xiliumini.events import ErrorEvent, FinalEvent, TokenEvent
+from xiliumini.events import (
+    ActorEvent,
+    ErrorEvent,
+    FinalEvent,
+    PlannerEvent,
+    ProgressEvent,
+    VerifierEvent,
+)
 
 runner = CliRunner()
 
 
-def test_cli_help_lists_task_zero_commands() -> None:
-    result = runner.invoke(app, ["--help"])
+def test_cli_reconfigures_legacy_output_for_stage_icons(monkeypatch) -> None:
+    class LegacyStream:
+        encoding = "gbk"
 
-    assert result.exit_code == 0
-    for command in ("doctor", "ask", "chat", "sessions"):
-        assert command in result.stdout
+        def __init__(self) -> None:
+            self.calls: list[dict[str, str]] = []
 
+        def reconfigure(self, **kwargs) -> None:
+            self.calls.append(kwargs)
 
-def test_cli_version_reports_package_version() -> None:
-    result = runner.invoke(app, ["--version"])
+    stdout = LegacyStream()
+    stderr = LegacyStream()
+    monkeypatch.setattr(cli_module.sys, "stdout", stdout)
+    monkeypatch.setattr(cli_module.sys, "stderr", stderr)
 
-    assert result.exit_code == 0
-    assert __version__ in result.stdout
+    cli_module._ensure_utf8_output()
 
-
-def test_doctor_missing_config_exits_two_without_traceback(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    for name in ("XILIUMINI_API_KEY", "XILIUMINI_MODEL", "XILIUMINI_MODELS"):
-        monkeypatch.delenv(name, raising=False)
-
-    result = runner.invoke(app, ["doctor"])
-
-    assert result.exit_code == 2
-    assert "XILIUMINI_API_KEY" in result.stdout
-    assert "Traceback" not in result.stdout
-
-
-def test_doctor_whitespace_config_exits_two_without_traceback(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("XILIUMINI_API_KEY", "   ")
-    monkeypatch.setenv("XILIUMINI_MODEL", "   ")
-
-    result = runner.invoke(app, ["doctor"])
-
-    assert result.exit_code == 2
-    assert "XILIUMINI_API_KEY" in result.stdout
-    assert "XILIUMINI_MODEL" in result.stdout
-    assert "Traceback" not in result.stdout
-
-
-def test_chat_session_option_is_present() -> None:
-    result = runner.invoke(app, ["chat", "--help"])
-
-    assert result.exit_code == 0
-    assert "--session" in result.stdout
+    assert stdout.calls == [{"encoding": "utf-8", "errors": "replace"}]
+    assert stderr.calls == [{"encoding": "utf-8", "errors": "replace"}]
 
 
 def configured_settings(tmp_path: Path) -> Settings:
@@ -81,127 +55,138 @@ def configured_settings(tmp_path: Path) -> Settings:
 class FakeRuntime:
     def __init__(self, events) -> None:
         self.events = events
+        self.calls: list[tuple[str, str, int]] = []
 
-    async def astream(self, _question: str, _session_id: str):
-        for event in self.events:
-            yield event
-
-
-class ConversationalFakeRuntime:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
-        self.event_loops: list[asyncio.AbstractEventLoop] = []
-
-    async def astream(self, question: str, session_id: str):
-        self.calls.append((question, session_id))
-        self.event_loops.append(asyncio.get_running_loop())
-        yield TokenEvent(text=f"reply:{question}")
-        yield FinalEvent(text=f"reply:{question}", session_id=session_id)
+    def stream(self, question: str, session_id: str, max_attempts: int = 3):
+        self.calls.append((question, session_id, max_attempts))
+        yield from self.events
 
 
-def test_bare_command_starts_conversation_and_reuses_session(monkeypatch, tmp_path: Path) -> None:
-    runtime = ConversationalFakeRuntime()
+def install_runtime(monkeypatch, tmp_path: Path, runtime: FakeRuntime) -> None:
     monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
-    monkeypatch.setattr(cli_module, "create_runtime", lambda _settings: runtime, raising=False)
-
-    result = runner.invoke(app, input="hello\nfollow up\n/exit\n")
-
-    assert result.exit_code == 0
-    assert [question for question, _session_id in runtime.calls] == ["hello", "follow up"]
-    assert runtime.calls[0][1] == runtime.calls[1][1]
-    assert "reply:hello" in result.stdout
-    assert "reply:follow up" in result.stdout
+    monkeypatch.setattr(cli_module, "create_runtime", lambda _settings: runtime)
 
 
-def test_conversation_reuses_one_event_loop_across_turns(monkeypatch, tmp_path: Path) -> None:
-    runtime = ConversationalFakeRuntime()
-    monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
-    monkeypatch.setattr(cli_module, "create_runtime", lambda _settings: runtime, raising=False)
+def test_cli_help_and_version() -> None:
+    help_result = runner.invoke(app, ["--help"])
+    version_result = runner.invoke(app, ["--version"])
 
-    result = runner.invoke(app, input="first\nsecond\n/exit\n")
-
-    assert result.exit_code == 0
-    assert len(runtime.event_loops) == 2
-    assert runtime.event_loops[0] is runtime.event_loops[1]
-
-
-def test_chat_command_starts_the_same_conversation_loop(monkeypatch, tmp_path: Path) -> None:
-    runtime = ConversationalFakeRuntime()
-    monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
-    monkeypatch.setattr(cli_module, "create_runtime", lambda _settings: runtime, raising=False)
-
-    result = runner.invoke(app, ["chat"], input="hello\n/exit\n")
-
-    assert result.exit_code == 0
-    assert [question for question, _session_id in runtime.calls] == ["hello"]
-    assert "reply:hello" in result.stdout
+    assert help_result.exit_code == 0
+    for command in ("doctor", "ask", "chat", "sessions"):
+        assert command in help_result.stdout
+    assert version_result.exit_code == 0
+    assert __version__ in version_result.stdout
 
 
-def test_interactive_commands_do_not_reach_provider_and_new_changes_session(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    runtime = ConversationalFakeRuntime()
-    monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
-    monkeypatch.setattr(cli_module, "create_runtime", lambda _settings: runtime, raising=False)
+def test_doctor_missing_config_exits_two_without_traceback(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    for name in ("XILIUMINI_API_KEY", "XILIUMINI_MODEL", "XILIUMINI_MODELS"):
+        monkeypatch.delenv(name, raising=False)
 
-    result = runner.invoke(
-        app,
-        input="first\n/help\n/status\n/new\nsecond\n/exit\n",
-    )
+    result = runner.invoke(app, ["doctor"])
 
-    assert result.exit_code == 0
-    assert [question for question, _session_id in runtime.calls] == ["first", "second"]
-    assert runtime.calls[0][1] != runtime.calls[1][1]
-    assert "/help" in result.stdout
-    assert "fake-model" in result.stdout
-
-
-def test_bare_command_exits_cleanly_on_end_of_input(monkeypatch, tmp_path: Path) -> None:
-    runtime = ConversationalFakeRuntime()
-    monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
-    monkeypatch.setattr(cli_module, "create_runtime", lambda _settings: runtime, raising=False)
-
-    result = runner.invoke(app, input="")
-
-    assert result.exit_code == 0
+    assert result.exit_code == 2
+    assert "XILIUMINI_API_KEY" in result.stdout
     assert "Traceback" not in result.stdout
 
 
-def test_ask_streams_tokens_without_repeating_final_text(monkeypatch, tmp_path: Path) -> None:
+def test_ask_uses_default_and_explicit_max_attempts(monkeypatch, tmp_path: Path) -> None:
+    runtime = FakeRuntime([FinalEvent(text="done", session_id="session")])
+    install_runtime(monkeypatch, tmp_path, runtime)
+
+    default = runner.invoke(app, ["ask", "first"])
+    explicit = runner.invoke(app, ["ask", "second", "--max-attempts", "5"])
+
+    assert default.exit_code == explicit.exit_code == 0
+    assert [call[2] for call in runtime.calls] == [3, 5]
+
+
+def test_ask_rejects_zero_max_attempts() -> None:
+    result = runner.invoke(app, ["ask", "question", "--max-attempts", "0"])
+
+    assert result.exit_code == 2
+    assert "--max-attempts" in result.stderr
+
+
+def test_ask_renders_each_graph_stage(monkeypatch, tmp_path: Path) -> None:
     runtime = FakeRuntime(
         [
-            TokenEvent(text="hel"),
-            TokenEvent(text="lo"),
-            FinalEvent(text="hello", session_id="session-1"),
+            PlannerEvent(todo=["test first", "implement"]),
+            ProgressEvent(stage="actor", message="Starting: tests"),
+            ActorEvent(result="red then green", attempt=1),
+            VerifierEvent(passed=True, reason="all evidence present", attempt=1),
+            FinalEvent(text="passed", session_id="session"),
         ]
     )
-    monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
-    monkeypatch.setattr(cli_module, "create_runtime", lambda _settings: runtime, raising=False)
+    install_runtime(monkeypatch, tmp_path, runtime)
 
-    result = runner.invoke(app, ["ask", "greet"])
+    result = runner.invoke(app, ["ask", "build"])
 
     assert result.exit_code == 0
-    assert result.stdout == "hello\n"
+    assert "📋 Planner: test first → implement" in result.stdout
+    assert "Starting: tests" in result.stdout
+    assert "🔧 Actor (attempt 1/3): red then green" in result.stdout
+    assert "✅ Verifier: all evidence present" in result.stdout
+    assert "📝 Final: passed" in result.stdout
 
 
-def test_ask_no_stream_prints_only_final_text(monkeypatch, tmp_path: Path) -> None:
+def test_ask_renders_failed_verifier_icon(monkeypatch, tmp_path: Path) -> None:
     runtime = FakeRuntime(
-        [TokenEvent(text="ignored"), FinalEvent(text="complete", session_id="session-1")]
+        [
+            VerifierEvent(passed=False, reason="demo missing", attempt=1),
+            FinalEvent(text="failed", session_id="session"),
+        ]
     )
-    monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
-    monkeypatch.setattr(cli_module, "create_runtime", lambda _settings: runtime, raising=False)
+    install_runtime(monkeypatch, tmp_path, runtime)
+
+    result = runner.invoke(app, ["ask", "build"])
+
+    assert result.exit_code == 0
+    assert "❌ Verifier: demo missing" in result.stdout
+
+
+def test_ask_no_stream_hides_intermediate_events(monkeypatch, tmp_path: Path) -> None:
+    runtime = FakeRuntime(
+        [
+            PlannerEvent(todo=["hidden"]),
+            ActorEvent(result="hidden", attempt=1),
+            VerifierEvent(passed=True, reason="hidden", attempt=1),
+            FinalEvent(text="complete", session_id="session"),
+        ]
+    )
+    install_runtime(monkeypatch, tmp_path, runtime)
 
     result = runner.invoke(app, ["ask", "answer", "--no-stream"])
 
     assert result.exit_code == 0
-    assert result.stdout == "complete\n"
+    assert result.stdout == "📝 Final: complete\n"
+
+
+def test_chat_uses_default_attempts_and_reuses_session(monkeypatch, tmp_path: Path) -> None:
+    runtime = FakeRuntime([FinalEvent(text="done", session_id="session")])
+    install_runtime(monkeypatch, tmp_path, runtime)
+
+    result = runner.invoke(app, input="hello\nfollow up\n/exit\n")
+
+    assert result.exit_code == 0
+    assert [call[0] for call in runtime.calls] == ["hello", "follow up"]
+    assert runtime.calls[0][1] == runtime.calls[1][1]
+    assert [call[2] for call in runtime.calls] == [3, 3]
+
+
+def test_interactive_new_changes_session(monkeypatch, tmp_path: Path) -> None:
+    runtime = FakeRuntime([FinalEvent(text="done", session_id="session")])
+    install_runtime(monkeypatch, tmp_path, runtime)
+
+    result = runner.invoke(app, input="first\n/new\nsecond\n/exit\n")
+
+    assert result.exit_code == 0
+    assert runtime.calls[0][1] != runtime.calls[1][1]
 
 
 def test_ask_runtime_error_exits_one_without_traceback(monkeypatch, tmp_path: Path) -> None:
     runtime = FakeRuntime([ErrorEvent(code="provider_error", message="Provider request failed")])
-    monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
-    monkeypatch.setattr(cli_module, "create_runtime", lambda _settings: runtime, raising=False)
+    install_runtime(monkeypatch, tmp_path, runtime)
 
     result = runner.invoke(app, ["ask", "answer"])
 

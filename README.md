@@ -1,10 +1,10 @@
 # xiliumini
 
 `xiliumini` is a minimal Python Agent CLI built around an OpenAI-compatible model,
-LangGraph, and a small set of bounded tools. Task 0 provides the installable CLI,
-validated configuration, calculator and timezone tools, isolated analysis delegation,
-and a checkpointed ReAct loop. Task 0.1 adds a persistent workspace per session and
-four workspace-confined file tools.
+LangGraph, and a small set of bounded tools. Its main execution path is a
+Planner → Actor → Verifier workflow with bounded retries and a deterministic Final
+node. Each session has a persistent workspace with confined file tools and a restricted
+Python/pytest command tool.
 
 ## Requirements
 
@@ -32,7 +32,6 @@ XILIUMINI_API_KEY=your-provider-key
 XILIUMINI_MODEL=your-model-name
 XILIUMINI_BASE_URL=https://your-provider.example/v1
 XILIUMINI_TEMPERATURE=0
-XILIUMINI_MAX_STEPS=8
 XILIUMINI_TIMEOUT_SECONDS=60
 XILIUMINI_ANALYSIS_TIMEOUT_SECONDS=30
 XILIUMINI_ANALYSIS_MAX_CHARS=8000
@@ -61,12 +60,25 @@ Check Python, configuration, the data directory, and model construction:
 xiliumini doctor
 ```
 
-Run the Task 0 ReAct loop:
+Run the Plan-Act-Verify workflow. `--max-attempts` defaults to 3:
 
 ```powershell
-xiliumini ask "What time is it in Asia/Shanghai?"
+xiliumini ask "帮我实现一个 Conway's Game of Life，要求 TDD：先写测试，再写实现，最后跑 demo" --max-attempts 3
 xiliumini ask "Calculate (17 + 5) * 3" --no-stream
 ```
+
+Normal output identifies every completed graph stage:
+
+```text
+📋 Planner: ...
+🔧 Actor (attempt 1/3): ...
+✅ Verifier: ...
+📝 Final: ...
+```
+
+Failed verification uses `❌ Verifier` and retries Actor while attempts remain.
+`--no-stream` hides Planner, Actor, Verifier, and action-progress events, leaving only
+the Final line.
 
 Each session receives an isolated workspace at:
 
@@ -74,9 +86,16 @@ Each session receives an isolated workspace at:
 <XILIUMINI_DATA_DIR>/workspaces/<session-id>/
 ```
 
-The main Actor can use `file_read`, `file_write`, `file_edit`, and `grep`. Tool paths
+The main Actor can use `file_read`, `file_write`, `file_edit`, `grep`, and `command`.
+Tool paths
 must be relative to that session workspace; absolute paths, parent traversal, UNC
 paths, drive-qualified paths, and symlink escapes are rejected.
+
+The command tool accepts only `python <workspace-relative.py>` and
+`python -m pytest ...`, uses argv without a shell, fixes the working directory to the
+session workspace, and bounds runtime and output. This is not an OS sandbox: generated
+Python code still runs with the same user permissions as the xiliumini process. Only
+run tasks and generated code you trust.
 
 Inspect the command contracts:
 
@@ -92,7 +111,9 @@ The analysis Agent has its own context, binds no tools, and cannot recursively d
 The required `bash_tool.py` module is present but shell execution is disabled and the
 tool is not registered in the MVP.
 
-The primary ReAct loop lives in `src/xiliumini/core/agent.py`. Modules under
+Shared state, nodes, and graph routing live in `src/xiliumini/graph/state.py`,
+`nodes.py`, and `workflow.py`. `src/xiliumini/core/agent.py` translates LangGraph
+`updates` and `custom` streams into stable CLI events. Modules under
 `src/xiliumini/agents/` are specialist sub-Agents invoked only for focused work.
 
 ## Development

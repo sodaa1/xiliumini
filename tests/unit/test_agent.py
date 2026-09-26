@@ -1,123 +1,124 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from xiliumini.core.agent import MAX_STEPS_MESSAGE, build_actor
-from xiliumini.core.state import RuntimeState
-from xiliumini.prompts import ACTOR_PROMPT
-from xiliumini.tools.calculator import calculator
+import xiliumini.core.agent as agent_module
+from xiliumini.events import (
+    ActorEvent,
+    FinalEvent,
+    PlannerEvent,
+    ProgressEvent,
+    VerifierEvent,
+)
+from xiliumini.graph.state import GraphState
 
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
 
 
-class ScriptedModel:
-    def __init__(self, responses: Sequence[AIMessage], *, repeat: bool = False) -> None:
-        self.responses = list(responses)
-        self.repeat = repeat
-        self.calls: list[list] = []
-        self.bound_tool_names: list[str] = []
-
-    def bind_tools(self, tools):
-        self.bound_tool_names = [tool.name for tool in tools]
-        return self
-
-    async def ainvoke(self, messages):
-        self.calls.append(list(messages))
-        if self.repeat:
-            return self.responses[0]
-        return self.responses.pop(0)
-
-
-def tool_call(expression: str = "2 + 2") -> AIMessage:
-    return AIMessage(
-        content="",
-        tool_calls=[
-            {
-                "name": "calculator",
-                "args": {"expression": expression},
-                "id": "call-1",
-                "type": "tool_call",
-            }
-        ],
-    )
-
-
-def initial_state(tmp_path: Path, task: str) -> RuntimeState:
+def inputs(tmp_path: Path, *, max_attempts: int = 3) -> GraphState:
     return {
-        "messages": [HumanMessage(content=task)],
+        "task": "build it",
+        "todo": [],
+        "result": "",
+        "execution": [],
+        "graph_state": "planning",
+        "verification": "",
+        "attempt": 0,
+        "max_attempts": max_attempts,
+        "final_answer": "",
         "session_id": SESSION_ID,
         "workspace": tmp_path,
-        "step_count": 0,
     }
 
 
-@pytest.mark.asyncio
-async def test_actor_builds_actor_prompt_then_user_task(tmp_path: Path) -> None:
-    model = ScriptedModel([AIMessage(content="answer")])
-    graph = build_actor(model, [], max_steps=2)
+class FakeWorkflow:
+    def __init__(self, chunks: list[object]) -> None:
+        self.chunks = chunks
+        self.calls: list[tuple[dict, dict, list[str]]] = []
 
-    await graph.ainvoke(initial_state(tmp_path, "inspect project"))
-
-    first_call = model.calls[0]
-    assert isinstance(first_call[0], SystemMessage)
-    assert first_call[0].content == ACTOR_PROMPT
-    assert isinstance(first_call[1], HumanMessage)
-    assert first_call[1].content == "inspect project"
+    def stream(self, graph_inputs, *, config, stream_mode):
+        self.calls.append((graph_inputs, config, stream_mode))
+        yield from self.chunks
 
 
-@pytest.mark.asyncio
-async def test_actor_returns_a_direct_model_answer(tmp_path: Path) -> None:
-    model = ScriptedModel([AIMessage(content="direct answer")])
-    graph = build_actor(model, [calculator], max_steps=4)
+def test_stream_agent_calls_workflow_with_both_stream_modes(monkeypatch, tmp_path: Path) -> None:
+    workflow = FakeWorkflow([])
+    monkeypatch.setattr(agent_module, "build_workflow", lambda *args, **kwargs: workflow)
+    graph_inputs = inputs(tmp_path)
 
-    result = await graph.ainvoke(initial_state(tmp_path, "hello"))
-
-    assert result["messages"][-1].content == "direct answer"
-    assert result["step_count"] == 1
-    assert result["workspace"] == tmp_path
-    assert model.bound_tool_names == ["calculator"]
-
-
-@pytest.mark.asyncio
-async def test_actor_executes_a_tool_then_returns_to_the_model(tmp_path: Path) -> None:
-    model = ScriptedModel([tool_call(), AIMessage(content="The result is 4")])
-    graph = build_actor(model, [calculator], max_steps=4)
-
-    result = await graph.ainvoke(initial_state(tmp_path, "2 + 2?"))
-
-    tool_messages = [message for message in result["messages"] if isinstance(message, ToolMessage)]
-    assert [message.content for message in tool_messages] == ["4"]
-    assert result["messages"][-1].content == "The result is 4"
-    assert result["step_count"] == 2
+    assert list(agent_module.stream_agent(object(), [], graph_inputs)) == []
+    assert workflow.calls == [
+        (
+            graph_inputs,
+            {"configurable": {"thread_id": SESSION_ID}},
+            ["updates", "custom"],
+        )
+    ]
 
 
-@pytest.mark.asyncio
-async def test_actor_returns_tool_errors_to_the_model(tmp_path: Path) -> None:
-    model = ScriptedModel(
-        [tool_call("open('secret')"), AIMessage(content="The expression was rejected")]
+def test_stream_agent_maps_updates_and_custom_events(monkeypatch, tmp_path: Path) -> None:
+    workflow = FakeWorkflow(
+        [
+            ("updates", {"planner": {"todo": ["test", "implement"]}}),
+            ("custom", {"stage": "actor", "message": "Starting: tests"}),
+            ("updates", {"actor": {"result": "red observed", "attempt": 1}}),
+            (
+                "updates",
+                {
+                    "verifier": {
+                        "graph_state": "failed",
+                        "verification": "green missing",
+                        "attempt": 1,
+                    }
+                },
+            ),
+            (
+                "updates",
+                {
+                    "final": {
+                        "final_answer": "failed after 1",
+                        "session_id": "ignored-node-value",
+                    }
+                },
+            ),
+        ]
     )
-    graph = build_actor(model, [calculator], max_steps=4)
+    monkeypatch.setattr(agent_module, "build_workflow", lambda *args, **kwargs: workflow)
 
-    result = await graph.ainvoke(initial_state(tmp_path, "unsafe"))
+    events = list(agent_module.stream_agent(object(), [], inputs(tmp_path)))
 
-    tool_message = next(
-        message for message in result["messages"] if isinstance(message, ToolMessage)
+    assert events == [
+        PlannerEvent(todo=["test", "implement"]),
+        ProgressEvent(stage="actor", message="Starting: tests"),
+        ActorEvent(result="red observed", attempt=1),
+        VerifierEvent(passed=False, reason="green missing", attempt=1),
+        FinalEvent(text="failed after 1", session_id=SESSION_ID),
+    ]
+
+
+def test_stream_agent_ignores_unknown_and_incomplete_chunks(monkeypatch, tmp_path: Path) -> None:
+    workflow = FakeWorkflow(
+        [
+            ("debug", {"planner": {"todo": ["ignored"]}}),
+            ("updates", {"unknown": {"value": 1}}),
+            ("updates", {"actor": {"attempt": 1}}),
+            ("custom", {"stage": "actor"}),
+            "malformed",
+        ]
     )
-    assert str(tool_message.content).startswith("Error:")
-    assert result["messages"][-1].content == "The expression was rejected"
+    monkeypatch.setattr(agent_module, "build_workflow", lambda *args, **kwargs: workflow)
+
+    assert list(agent_module.stream_agent(object(), [], inputs(tmp_path))) == []
 
 
-@pytest.mark.asyncio
-async def test_actor_stops_repeated_tool_calls_at_max_steps(tmp_path: Path) -> None:
-    model = ScriptedModel([tool_call()], repeat=True)
-    graph = build_actor(model, [calculator], max_steps=2)
+def test_stream_agent_rejects_zero_attempts_before_building(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        agent_module,
+        "build_workflow",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not build")),
+    )
 
-    result = await graph.ainvoke(initial_state(tmp_path, "loop"))
-
-    assert result["step_count"] == 2
-    assert result["messages"][-1].content == MAX_STEPS_MESSAGE
-    assert len(model.calls) == 2
+    with pytest.raises(ValueError, match="max_attempts must be at least 1"):
+        list(agent_module.stream_agent(object(), [], inputs(tmp_path, max_attempts=0)))

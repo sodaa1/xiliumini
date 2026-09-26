@@ -27,5 +27,11 @@ def test_registered_builtin_tools_exclude_bash() -> None:
 def test_workspace_tools_are_bound_to_one_root(tmp_path: Path) -> None:
     tools = get_workspace_tools(tmp_path)
 
-    assert [tool.name for tool in tools] == ["file_read", "file_write", "file_edit", "grep"]
+    assert [tool.name for tool in tools] == [
+        "file_read",
+        "file_write",
+        "file_edit",
+        "grep",
+        "command",
+    ]
     assert all(getattr(tool, "workspace", None) == tmp_path for tool in tools)

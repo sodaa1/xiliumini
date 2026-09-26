@@ -58,7 +58,6 @@ def test_settings_builds_an_ordered_unique_model_list(isolated_cwd: Path) -> Non
 @pytest.mark.parametrize(
     ("name", "value"),
     [
-        ("XILIUMINI_MAX_STEPS", "0"),
         ("XILIUMINI_TIMEOUT_SECONDS", "0"),
         ("XILIUMINI_ANALYSIS_TIMEOUT_SECONDS", "0"),
         ("XILIUMINI_ANALYSIS_MAX_CHARS", "0"),
@@ -77,3 +76,9 @@ def test_settings_rejects_invalid_runtime_limits(
 
     with pytest.raises(ConfigError, match=name):
         Settings.from_env(env)
+
+
+def test_settings_no_longer_exposes_react_max_steps(isolated_cwd: Path) -> None:
+    settings = Settings.from_env({"XILIUMINI_API_KEY": "secret", "XILIUMINI_MODEL": "primary"})
+
+    assert not hasattr(settings, "max_steps")

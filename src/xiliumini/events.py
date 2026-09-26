@@ -4,22 +4,27 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
-class TokenEvent:
-    text: str
+class PlannerEvent:
+    todo: list[str]
 
 
 @dataclass(frozen=True, slots=True)
-class ToolStartedEvent:
-    name: str
-    call_id: str
+class ActorEvent:
+    result: str
+    attempt: int
 
 
 @dataclass(frozen=True, slots=True)
-class ToolFinishedEvent:
-    name: str
-    call_id: str
-    duration_ms: float
-    ok: bool
+class VerifierEvent:
+    passed: bool
+    reason: str
+    attempt: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressEvent:
+    stage: str
+    message: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,4 +39,4 @@ class ErrorEvent:
     message: str
 
 
-RuntimeEvent = TokenEvent | ToolStartedEvent | ToolFinishedEvent | FinalEvent | ErrorEvent
+RuntimeEvent = PlannerEvent | ActorEvent | VerifierEvent | ProgressEvent | FinalEvent | ErrorEvent

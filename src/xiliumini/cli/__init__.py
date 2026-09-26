@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import sys
+from contextlib import suppress
 from typing import Annotated
 from uuid import uuid4
 
@@ -10,7 +10,14 @@ import typer
 from xiliumini import __version__
 from xiliumini.config import Settings, load_settings
 from xiliumini.errors import ConfigError, XiliuminiError
-from xiliumini.events import ErrorEvent, FinalEvent, TokenEvent
+from xiliumini.events import (
+    ActorEvent,
+    ErrorEvent,
+    FinalEvent,
+    PlannerEvent,
+    ProgressEvent,
+    VerifierEvent,
+)
 from xiliumini.providers.openai_compatible import create_chat_model
 from xiliumini.runtime import Runtime, create_runtime
 
@@ -21,6 +28,17 @@ app = typer.Typer(
 )
 
 
+def _ensure_utf8_output() -> None:
+    """Allow required stage icons on legacy Windows code pages."""
+
+    for stream in (sys.stdout, sys.stderr):
+        encoding = str(getattr(stream, "encoding", "")).lower().replace("_", "-")
+        reconfigure = getattr(stream, "reconfigure", None)
+        if encoding not in {"utf-8", "utf8", "utf-8-sig"} and callable(reconfigure):
+            with suppress(OSError, ValueError):
+                reconfigure(encoding="utf-8", errors="replace")
+
+
 @app.callback()
 def main(
     context: typer.Context,
@@ -29,6 +47,7 @@ def main(
         typer.Option("--version", help="Show the installed version.", is_eager=True),
     ] = False,
 ) -> None:
+    _ensure_utf8_output()
     if version:
         typer.echo(f"xiliumini {__version__}")
         raise typer.Exit()
@@ -62,13 +81,23 @@ def doctor() -> None:
 def ask(
     question: Annotated[str, typer.Argument(help="Question for the agent.")],
     no_stream: Annotated[bool, typer.Option("--no-stream")] = False,
+    max_attempts: Annotated[
+        int,
+        typer.Option("--max-attempts", min=1, help="Maximum Actor attempts."),
+    ] = 3,
 ) -> None:
     """Ask one question."""
 
     try:
         settings = load_settings()
         runtime = create_runtime(settings)
-        exit_code = asyncio.run(_run_question(runtime, question, str(uuid4()), no_stream))
+        exit_code = _run_question(
+            runtime,
+            question,
+            str(uuid4()),
+            no_stream,
+            max_attempts,
+        )
     except ConfigError as exc:
         typer.echo(f"Configuration error: {exc}")
         raise typer.Exit(code=2) from None
@@ -82,21 +111,26 @@ def ask(
         raise typer.Exit(code=exit_code)
 
 
-async def _run_question(runtime, question: str, session_id: str, no_stream: bool) -> int:
-    emitted_token = False
-    async for event in runtime.astream(question, session_id):
-        if isinstance(event, TokenEvent):
-            if not no_stream:
-                typer.echo(event.text, nl=False)
-                emitted_token = True
+def _run_question(
+    runtime: Runtime,
+    question: str,
+    session_id: str,
+    no_stream: bool,
+    max_attempts: int = 3,
+) -> int:
+    for event in runtime.stream(question, session_id, max_attempts=max_attempts):
+        if isinstance(event, PlannerEvent) and not no_stream:
+            typer.echo(f"📋 Planner: {' → '.join(event.todo)}")
+        elif isinstance(event, ProgressEvent) and not no_stream:
+            typer.echo(f"  ↳ {event.message}")
+        elif isinstance(event, ActorEvent) and not no_stream:
+            typer.echo(f"🔧 Actor (attempt {event.attempt}/{max_attempts}): {event.result}")
+        elif isinstance(event, VerifierEvent) and not no_stream:
+            icon = "✅" if event.passed else "❌"
+            typer.echo(f"{icon} Verifier: {event.reason}")
         elif isinstance(event, FinalEvent):
-            if no_stream or not emitted_token:
-                typer.echo(event.text)
-            else:
-                typer.echo()
+            typer.echo(f"📝 Final: {event.text}")
         elif isinstance(event, ErrorEvent):
-            if emitted_token:
-                typer.echo()
             typer.echo(f"Error [{event.code}]: {event.message}")
             return 1
     return 0
@@ -126,12 +160,12 @@ def _start_chat() -> None:
         raise typer.Exit(code=1) from None
 
     try:
-        asyncio.run(_chat_loop(runtime, settings))
+        _chat_loop(runtime, settings)
     except KeyboardInterrupt:
         typer.echo("\nGoodbye.")
 
 
-async def _chat_loop(runtime: Runtime, settings: Settings) -> None:
+def _chat_loop(runtime: Runtime, settings: Settings) -> None:
     session_id = str(uuid4())
     typer.echo(f"xiliumini {__version__} · {settings.model}")
     typer.echo("Type /help for commands. Ctrl+C or Ctrl+D exits.")
@@ -162,7 +196,7 @@ async def _chat_loop(runtime: Runtime, settings: Settings) -> None:
             typer.echo(f"Unknown command: {question}. Type /help.")
             continue
 
-        await _run_question(runtime, question, session_id, no_stream=False)
+        _run_question(runtime, question, session_id, no_stream=False, max_attempts=3)
 
 
 @app.command("sessions")

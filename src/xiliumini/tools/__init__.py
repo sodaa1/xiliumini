@@ -5,6 +5,7 @@ from pathlib import Path
 from langchain_core.tools import BaseTool
 
 from xiliumini.tools.calculator import calculator
+from xiliumini.tools.command import CommandTool
 from xiliumini.tools.current_time import current_time
 from xiliumini.tools.file_edit import FileEditTool
 from xiliumini.tools.file_read import FileReadTool
@@ -26,11 +27,13 @@ def get_workspace_tools(workspace: Path) -> list[BaseTool]:
         FileWriteTool(workspace=workspace),
         FileEditTool(workspace=workspace),
         GrepTool(workspace=workspace),
+        CommandTool(workspace=workspace),
     ]
 
 
 __all__ = [
     "calculator",
+    "CommandTool",
     "current_time",
     "get_builtin_tools",
     "get_workspace_tools",

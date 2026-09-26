@@ -25,7 +25,6 @@ class Settings(BaseSettings):
     models: str | None = None
     base_url: str | None = None
     temperature: float = 0
-    max_steps: int = Field(default=8, ge=1, le=100)
     timeout_seconds: float = Field(default=60, gt=0)
     analysis_timeout_seconds: float = Field(default=30, gt=0)
     analysis_max_chars: int = Field(default=8000, ge=1)

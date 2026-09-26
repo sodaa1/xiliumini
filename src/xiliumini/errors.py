@@ -32,3 +32,15 @@ class WorkspaceError(ToolExecutionError):
     """Raised when a workspace or workspace-relative path is invalid."""
 
     code = "workspace_error"
+
+
+class CommandExecutionError(ToolExecutionError):
+    """Raised when a requested command violates the bounded execution contract."""
+
+    code = "command_error"
+
+
+class NodeOutputError(XiliuminiError):
+    """Raised when a model node cannot produce its required structured output."""
+
+    code = "node_output_error"
