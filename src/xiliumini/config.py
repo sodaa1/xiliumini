@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     )
 
     api_key: SecretStr = Field(min_length=1)
+    tavily_api_key: SecretStr | None = Field(default=None, validation_alias="TAVILY_API_KEY")
     model: str = Field(min_length=1)
     models: str | None = None
     base_url: str | None = None
@@ -58,6 +59,8 @@ class Settings(BaseSettings):
                 for key, value in env.items()
                 if key.startswith(prefix)
             }
+            if "TAVILY_API_KEY" in env:
+                values["TAVILY_API_KEY"] = env["TAVILY_API_KEY"]
             return dynamic_settings_type(_env_file=None, **values)
         except ValidationError as exc:
             fields = []

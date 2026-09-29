@@ -1,30 +1,55 @@
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from typing_extensions import TypedDict
 
-ActionKind = Literal["tool", "command"]
-ActionPhase = Literal["test_red", "implementation", "test_green", "demo", "other"]
-GraphStatus = Literal["planning", "acting", "passed", "failed"]
+GraphStatus = Literal["planning", "verifying", "passed", "failed"]
+TodoStatus = Literal["pending", "in_progress", "completed", "blocked"]
 
 
-class ActionResult(TypedDict):
+class TodoDraft(TypedDict):
+    id: str
+    content: str
+
+
+class TodoItem(TodoDraft):
+    status: TodoStatus
+    note: str
+
+
+class ResearchNote(TypedDict):
+    summary: str
+    queries: list[str]
+    sources: list[str]
     attempt: int
-    kind: ActionKind
-    phase: ActionPhase
-    label: str
-    ok: bool
+
+
+class ToolEvent(TypedDict):
+    agent: Literal["planner", "search_agent", "code_agent"]
+    tool: str
+    args: dict[str, Any]
     output: str
-    exit_code: int | None
-    timed_out: bool
-    truncated: bool
+    ok: bool
+    attempt: int
+    phase: str | None
+
+
+class AgentResult(TypedDict):
+    agent: Literal["search_agent", "code_agent"]
+    instruction: str
+    ok: bool
+    summary: str
+    attempt: int
 
 
 class GraphState(TypedDict):
+    supervisor_ok: bool
     task: str
-    todo: list[str]
+    todos: list[TodoItem]
+    research_notes: list[ResearchNote]
+    agent_results: list[AgentResult]
+    tool_events: list[ToolEvent]
     result: str
-    execution: list[ActionResult]
     graph_state: GraphStatus
     verification: str
     attempt: int

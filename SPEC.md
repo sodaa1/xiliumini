@@ -219,3 +219,21 @@ Final，否则返回 Actor；Planner 只运行一次。Final 不调用模型，�
 - 自动测试和静态检查通过。
 - CLI、模型对话、工具循环、分析子 Agent、会话和 Trace 可用。
 - README 可指导首次运行。
+# Task2 实现补充：Supervisor 与专业子 Agent
+
+当前执行图为 `START → Planner → Verifier → Final → END`，验证失败且仍有次数时回到
+Planner。Planner 通过 `TodoWriteTool`、`CallSearchAgentTool`、`CallCodeAgentTool` 调度，
+不直接操作代码。旧 Actor 不再注册。
+
+- `run_search_agent(state, instruction, *, writer=None, max_loops=4)`：仅绑定 Tavily
+  `WebSearchTool`，返回摘要、queries、sources、messages、tool_events；没有
+  `TAVILY_API_KEY` 时返回明确工具错误。环境变量和 `.env` 均支持。
+- `run_code_agent(state, instruction, *, writer=None, max_loops=10)`：绑定工作区文件工具、
+  argv 形式的受限 Bash、TodoUpdate、Notepad；显式维护 todo 状态。Bash 不是操作系统沙箱。
+- todo/notepad 位于 session workspace 的 `.xiliumini/`；新问题重置 todo，重试保留进度。
+  layered memory 当前仅提供快照接口，不实现压缩。
+- Verifier 同时检查 todo、委派结果、来源和实际检查证据；不能用模型声称成功替代失败、
+  超时或截断的必要检查。耗尽尝试也经过 Final，展示未完成项。
+- CLI 展示 Planner attempt 和子 Agent 工具进度；`--no-stream` 只显示最终结果。
+
+以下原有阶段定义保留作为历史规划。

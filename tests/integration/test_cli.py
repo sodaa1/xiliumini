@@ -10,7 +10,6 @@ from xiliumini.cli import app
 from xiliumini.config import Settings
 from xiliumini.errors import ConfigError
 from xiliumini.events import (
-    ActorEvent,
     ErrorEvent,
     FinalEvent,
     PlannerEvent,
@@ -111,9 +110,9 @@ def test_ask_rejects_zero_max_attempts() -> None:
 def test_ask_renders_each_graph_stage(monkeypatch, tmp_path: Path) -> None:
     runtime = FakeRuntime(
         [
-            PlannerEvent(todo=["test first", "implement"]),
+            PlannerEvent(todos=[], summary="test first → implement", attempt=1),
             ProgressEvent(stage="actor", message="Starting: tests"),
-            ActorEvent(result="red then green", attempt=1),
+            ProgressEvent(stage="code_agent", message="codeAgent: red then green"),
             VerifierEvent(passed=True, reason="all evidence present", attempt=1),
             FinalEvent(text="passed", session_id="session"),
         ]
@@ -123,9 +122,9 @@ def test_ask_renders_each_graph_stage(monkeypatch, tmp_path: Path) -> None:
     result = runner.invoke(app, ["ask", "build"])
 
     assert result.exit_code == 0
-    assert "📋 Planner: test first → implement" in result.stdout
+    assert "Planner (attempt 1/3): test first → implement" in result.stdout
     assert "Starting: tests" in result.stdout
-    assert "🔧 Actor (attempt 1/3): red then green" in result.stdout
+    assert "codeAgent: red then green" in result.stdout
     assert "✅ Verifier: all evidence present" in result.stdout
     assert "📝 Final: passed" in result.stdout
 
@@ -148,8 +147,8 @@ def test_ask_renders_failed_verifier_icon(monkeypatch, tmp_path: Path) -> None:
 def test_ask_no_stream_hides_intermediate_events(monkeypatch, tmp_path: Path) -> None:
     runtime = FakeRuntime(
         [
-            PlannerEvent(todo=["hidden"]),
-            ActorEvent(result="hidden", attempt=1),
+            PlannerEvent(todos=[], summary="hidden", attempt=1),
+            ProgressEvent(stage="code_agent", message="hidden"),
             VerifierEvent(passed=True, reason="hidden", attempt=1),
             FinalEvent(text="complete", session_id="session"),
         ]

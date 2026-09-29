@@ -11,7 +11,6 @@ from xiliumini import __version__
 from xiliumini.config import Settings, load_settings
 from xiliumini.errors import ConfigError, XiliuminiError
 from xiliumini.events import (
-    ActorEvent,
     ErrorEvent,
     FinalEvent,
     PlannerEvent,
@@ -83,7 +82,7 @@ def ask(
     no_stream: Annotated[bool, typer.Option("--no-stream")] = False,
     max_attempts: Annotated[
         int,
-        typer.Option("--max-attempts", min=1, help="Maximum Actor attempts."),
+        typer.Option("--max-attempts", min=1, help="Maximum Supervisor attempts."),
     ] = 3,
 ) -> None:
     """Ask one question."""
@@ -120,11 +119,9 @@ def _run_question(
 ) -> int:
     for event in runtime.stream(question, session_id, max_attempts=max_attempts):
         if isinstance(event, PlannerEvent) and not no_stream:
-            typer.echo(f"📋 Planner: {' → '.join(event.todo)}")
+            typer.echo(f"📋 Planner (attempt {event.attempt}/{max_attempts}): {event.summary}")
         elif isinstance(event, ProgressEvent) and not no_stream:
             typer.echo(f"  ↳ {event.message}")
-        elif isinstance(event, ActorEvent) and not no_stream:
-            typer.echo(f"🔧 Actor (attempt {event.attempt}/{max_attempts}): {event.result}")
         elif isinstance(event, VerifierEvent) and not no_stream:
             icon = "✅" if event.passed else "❌"
             typer.echo(f"{icon} Verifier: {event.reason}")

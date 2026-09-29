@@ -2,15 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from xiliumini.graph.state import TodoItem
+
 
 @dataclass(frozen=True, slots=True)
 class PlannerEvent:
-    todo: list[str]
-
-
-@dataclass(frozen=True, slots=True)
-class ActorEvent:
-    result: str
+    todos: list[TodoItem]
+    summary: str
     attempt: int
 
 
@@ -39,4 +37,4 @@ class ErrorEvent:
     message: str
 
 
-RuntimeEvent = PlannerEvent | ActorEvent | VerifierEvent | ProgressEvent | FinalEvent | ErrorEvent
+RuntimeEvent = PlannerEvent | VerifierEvent | ProgressEvent | FinalEvent | ErrorEvent

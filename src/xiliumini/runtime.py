@@ -1,24 +1,22 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import SecretStr
 
-from xiliumini.agents.analysis import AnalysisAgent
+from xiliumini.agents.react import model_factory
 from xiliumini.config import Settings
 from xiliumini.core.agent import stream_agent
 from xiliumini.errors import WorkspaceError, XiliuminiError
 from xiliumini.events import ErrorEvent, RuntimeEvent
 from xiliumini.graph.state import GraphState
 from xiliumini.providers.openai_compatible import classify_provider_error, create_chat_model
-from xiliumini.tools import get_builtin_tools, get_workspace_tools
-from xiliumini.tools.delegate_analysis import make_delegate_analysis
+from xiliumini.tools.todo import TodoStore
+from xiliumini.tools.web_search_tool import search_api_key
 from xiliumini.tools.workspace import create_session_workspace
-
-ToolFactory = Callable[[Path], Sequence[BaseTool]]
 
 
 class Runtime:
@@ -27,16 +25,16 @@ class Runtime:
     def __init__(
         self,
         model: Any,
-        tools: Sequence[BaseTool] = (),
         checkpointer: Any | None = None,
         data_dir: Path = Path(".xiliumini"),
-        workspace_tool_factory: ToolFactory | None = None,
+        agent_model_factory: Callable[[], Any] | None = None,
+        tavily_api_key: SecretStr | None = None,
     ) -> None:
         self._model = model
-        self._tools = list(tools)
         self._checkpointer = checkpointer or InMemorySaver()
         self._data_dir = data_dir
-        self._workspace_tool_factory = workspace_tool_factory or (lambda _workspace: ())
+        self._agent_model_factory = agent_model_factory
+        self._tavily_api_key = tavily_api_key
 
     def stream(
         self,
@@ -46,16 +44,22 @@ class Runtime:
     ) -> Iterator[RuntimeEvent]:
         try:
             workspace = create_session_workspace(self._data_dir, session_id)
-            tools = [*self._tools, *self._workspace_tool_factory(workspace)]
+            TodoStore(workspace).start_task()
         except WorkspaceError as exc:
             yield ErrorEvent(code=exc.code, message=str(exc))
+            return
+        except OSError:
+            yield ErrorEvent(code="workspace_error", message="could not initialize task progress")
             return
 
         inputs: GraphState = {
             "task": task,
-            "todo": [],
+            "todos": [],
+            "research_notes": [],
+            "agent_results": [],
+            "tool_events": [],
+            "supervisor_ok": False,
             "result": "",
-            "execution": [],
             "graph_state": "planning",
             "verification": "",
             "attempt": 0,
@@ -65,12 +69,30 @@ class Runtime:
             "workspace": workspace,
         }
         try:
-            yield from stream_agent(
-                self._model,
-                tools,
-                inputs,
-                checkpointer=self._checkpointer,
-            )
+            token = model_factory.set(self._agent_model_factory)
+            search_token = search_api_key.set(self._tavily_api_key)
+            try:
+                events = iter(
+                    stream_agent(
+                        self._model,
+                        inputs,
+                        checkpointer=self._checkpointer,
+                    )
+                )
+            finally:
+                model_factory.reset(token)
+                search_api_key.reset(search_token)
+            while True:
+                token = model_factory.set(self._agent_model_factory)
+                search_token = search_api_key.set(self._tavily_api_key)
+                try:
+                    event = next(events)
+                except StopIteration:
+                    return
+                finally:
+                    model_factory.reset(token)
+                    search_api_key.reset(search_token)
+                yield event
         except XiliuminiError as exc:
             yield ErrorEvent(code=getattr(exc, "code", "runtime_error"), message=str(exc))
         except Exception as exc:
@@ -79,18 +101,12 @@ class Runtime:
 
 
 def create_runtime(settings: Settings) -> Runtime:
-    """Construct the main graph runtime and isolated analysis Agent."""
+    """Construct the Supervisor runtime with independent specialist models."""
 
     main_model = create_chat_model(settings)
-    analysis_agent = AnalysisAgent(create_chat_model(settings))
-    delegate = make_delegate_analysis(
-        analysis_agent.analyze,
-        timeout_seconds=settings.analysis_timeout_seconds,
-        max_chars=settings.analysis_max_chars,
-    )
     return Runtime(
         main_model,
-        tools=[*get_builtin_tools(), delegate],
         data_dir=settings.data_dir,
-        workspace_tool_factory=get_workspace_tools,
+        agent_model_factory=lambda: create_chat_model(settings),
+        tavily_api_key=settings.tavily_api_key,
     )

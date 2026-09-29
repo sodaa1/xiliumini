@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from typing import Any
 
-from langchain_core.tools import BaseTool
-
 from xiliumini.events import (
-    ActorEvent,
     FinalEvent,
     PlannerEvent,
     ProgressEvent,
@@ -21,14 +18,11 @@ def _update_event(node: str, update: Any, session_id: str) -> RuntimeEvent | Non
     if not isinstance(update, dict):
         return None
     if node == "planner":
-        todo = update.get("todo")
-        if isinstance(todo, list) and all(isinstance(item, str) for item in todo):
-            return PlannerEvent(todo=todo)
-    elif node == "actor":
+        todos = update.get("todos")
         result = update.get("result")
         attempt = update.get("attempt")
-        if isinstance(result, str) and isinstance(attempt, int):
-            return ActorEvent(result=result, attempt=attempt)
+        if isinstance(todos, list) and isinstance(result, str) and isinstance(attempt, int):
+            return PlannerEvent(todos=todos, summary=result, attempt=attempt)
     elif node == "verifier":
         status = update.get("graph_state")
         reason = update.get("verification")
@@ -64,7 +58,6 @@ def _chunk_events(chunk: Any, session_id: str) -> Iterator[RuntimeEvent]:
 
 def stream_agent(
     model: Any,
-    tools: Sequence[BaseTool],
     inputs: GraphState,
     checkpointer: Any | None = None,
 ) -> Iterator[RuntimeEvent]:
@@ -72,10 +65,13 @@ def stream_agent(
 
     if inputs["max_attempts"] < 1:
         raise ValueError("max_attempts must be at least 1")
-    workflow = build_workflow(model, list(tools), checkpointer=checkpointer)
+    workflow = build_workflow(model, checkpointer=checkpointer)
     chunks = workflow.stream(
         inputs,
-        config={"configurable": {"thread_id": inputs["session_id"]}},
+        config={
+            "configurable": {"thread_id": inputs["session_id"]},
+            "recursion_limit": 2 * inputs["max_attempts"] + 5,
+        },
         stream_mode=["updates", "custom"],
     )
     for chunk in chunks:

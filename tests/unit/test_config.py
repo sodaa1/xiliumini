@@ -82,3 +82,14 @@ def test_settings_no_longer_exposes_react_max_steps(isolated_cwd: Path) -> None:
     settings = Settings.from_env({"XILIUMINI_API_KEY": "secret", "XILIUMINI_MODEL": "primary"})
 
     assert not hasattr(settings, "max_steps")
+
+
+def test_tavily_secret_loads_from_dotenv_without_export(monkeypatch, isolated_cwd):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    (isolated_cwd / ".env").write_text(
+        "XILIUMINI_API_KEY=fake\nXILIUMINI_MODEL=fake\nTAVILY_API_KEY=private-tavily\n"
+    )
+    settings = Settings.from_env()
+    assert settings.tavily_api_key is not None
+    assert settings.tavily_api_key.get_secret_value() == "private-tavily"
+    assert "private-tavily" not in repr(settings)

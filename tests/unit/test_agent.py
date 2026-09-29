@@ -6,7 +6,6 @@ import pytest
 
 import xiliumini.core.agent as agent_module
 from xiliumini.events import (
-    ActorEvent,
     FinalEvent,
     PlannerEvent,
     ProgressEvent,
@@ -20,9 +19,12 @@ SESSION_ID = "11111111-1111-4111-8111-111111111111"
 def inputs(tmp_path: Path, *, max_attempts: int = 3) -> GraphState:
     return {
         "task": "build it",
-        "todo": [],
+        "todos": [],
+        "research_notes": [],
+        "agent_results": [],
+        "tool_events": [],
+        "supervisor_ok": False,
         "result": "",
-        "execution": [],
         "graph_state": "planning",
         "verification": "",
         "attempt": 0,
@@ -48,11 +50,11 @@ def test_stream_agent_calls_workflow_with_both_stream_modes(monkeypatch, tmp_pat
     monkeypatch.setattr(agent_module, "build_workflow", lambda *args, **kwargs: workflow)
     graph_inputs = inputs(tmp_path)
 
-    assert list(agent_module.stream_agent(object(), [], graph_inputs)) == []
+    assert list(agent_module.stream_agent(object(), graph_inputs)) == []
     assert workflow.calls == [
         (
             graph_inputs,
-            {"configurable": {"thread_id": SESSION_ID}},
+            {"configurable": {"thread_id": SESSION_ID}, "recursion_limit": 11},
             ["updates", "custom"],
         )
     ]
@@ -61,9 +63,8 @@ def test_stream_agent_calls_workflow_with_both_stream_modes(monkeypatch, tmp_pat
 def test_stream_agent_maps_updates_and_custom_events(monkeypatch, tmp_path: Path) -> None:
     workflow = FakeWorkflow(
         [
-            ("updates", {"planner": {"todo": ["test", "implement"]}}),
+            ("updates", {"planner": {"todos": [], "result": "implemented", "attempt": 1}}),
             ("custom", {"stage": "actor", "message": "Starting: tests"}),
-            ("updates", {"actor": {"result": "red observed", "attempt": 1}}),
             (
                 "updates",
                 {
@@ -87,12 +88,11 @@ def test_stream_agent_maps_updates_and_custom_events(monkeypatch, tmp_path: Path
     )
     monkeypatch.setattr(agent_module, "build_workflow", lambda *args, **kwargs: workflow)
 
-    events = list(agent_module.stream_agent(object(), [], inputs(tmp_path)))
+    events = list(agent_module.stream_agent(object(), inputs(tmp_path)))
 
     assert events == [
-        PlannerEvent(todo=["test", "implement"]),
+        PlannerEvent(todos=[], summary="implemented", attempt=1),
         ProgressEvent(stage="actor", message="Starting: tests"),
-        ActorEvent(result="red observed", attempt=1),
         VerifierEvent(passed=False, reason="green missing", attempt=1),
         FinalEvent(text="failed after 1", session_id=SESSION_ID),
     ]
@@ -110,7 +110,7 @@ def test_stream_agent_ignores_unknown_and_incomplete_chunks(monkeypatch, tmp_pat
     )
     monkeypatch.setattr(agent_module, "build_workflow", lambda *args, **kwargs: workflow)
 
-    assert list(agent_module.stream_agent(object(), [], inputs(tmp_path))) == []
+    assert list(agent_module.stream_agent(object(), inputs(tmp_path))) == []
 
 
 def test_stream_agent_rejects_zero_attempts_before_building(monkeypatch, tmp_path: Path) -> None:
@@ -121,4 +121,4 @@ def test_stream_agent_rejects_zero_attempts_before_building(monkeypatch, tmp_pat
     )
 
     with pytest.raises(ValueError, match="max_attempts must be at least 1"):
-        list(agent_module.stream_agent(object(), [], inputs(tmp_path, max_attempts=0)))
+        list(agent_module.stream_agent(object(), inputs(tmp_path, max_attempts=0)))

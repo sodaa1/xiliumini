@@ -1,20 +1,19 @@
 from pathlib import Path
+from typing import get_args
 
-from xiliumini.graph.state import GraphState
-from xiliumini.prompts import (
-    ACTOR_NODE_PROMPT,
-    FINAL_PROMPT,
-    PLANNER_NODE_PROMPT,
-    VERIFIER_NODE_PROMPT,
-)
+import xiliumini.graph.state as state_module
+import xiliumini.prompts as prompts
 
 
 def test_graph_state_accepts_complete_initial_contract(tmp_path: Path) -> None:
-    state: GraphState = {
+    state: state_module.GraphState = {
         "task": "build life",
-        "todo": [],
+        "supervisor_ok": False,
+        "todos": [],
+        "research_notes": [],
+        "agent_results": [],
+        "tool_events": [],
         "result": "",
-        "execution": [],
         "graph_state": "planning",
         "verification": "",
         "attempt": 0,
@@ -27,9 +26,22 @@ def test_graph_state_accepts_complete_initial_contract(tmp_path: Path) -> None:
     assert state["workspace"] == tmp_path
 
 
-def test_task1_prompts_define_each_node_contract() -> None:
-    assert '"todo"' in PLANNER_NODE_PROMPT
-    assert '"actions"' in ACTOR_NODE_PROMPT
-    assert '"phase"' in ACTOR_NODE_PROMPT
-    assert '"status"' in VERIFIER_NODE_PROMPT
-    assert "{status}" in FINAL_PROMPT
+def test_task2_state_and_prompts_define_supervisor_contract() -> None:
+    assert hasattr(state_module, "TodoStatus")
+    assert set(get_args(state_module.TodoStatus)) == {
+        "pending",
+        "in_progress",
+        "completed",
+        "blocked",
+    }
+    assert "TodoWriteTool" in prompts.PLANNER_NODE_PROMPT
+    assert "CallSearchAgentTool" in prompts.PLANNER_NODE_PROMPT
+    assert "CallCodeAgentTool" in prompts.PLANNER_NODE_PROMPT
+    assert "WebSearchTool" in prompts.SEARCH_AGENT_PROMPT
+    assert "Do not write files" in prompts.SEARCH_AGENT_PROMPT
+    assert "TodoUpdateTool" in prompts.CODE_AGENT_PROMPT
+    assert "FileReadTool" in prompts.CODE_AGENT_PROMPT
+    assert "BashTool" in prompts.CODE_AGENT_PROMPT
+    assert '"status"' in prompts.VERIFIER_NODE_PROMPT
+    assert "{status}" in prompts.FINAL_PROMPT
+    assert not hasattr(prompts, "ACTOR_NODE_PROMPT")
