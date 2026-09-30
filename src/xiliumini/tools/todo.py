@@ -9,6 +9,7 @@ from langchain_core.tools.base import ArgsSchema
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from xiliumini.errors import WorkspaceError
+from xiliumini.graph.memory import decode_markdown_json, encode_markdown_json
 from xiliumini.graph.state import TodoDraft, TodoItem, TodoStatus
 from xiliumini.tools.workspace import (
     MAX_FILE_BYTES,
@@ -17,7 +18,8 @@ from xiliumini.tools.workspace import (
     resolve_workspace_path,
 )
 
-TODO_PATH = ".xiliumini/todos.json"
+TODO_PATH = "TODO.md"
+LEGACY_TODO_PATH = ".xiliumini/todos.json"
 
 
 class TodoDraftInput(BaseModel):
@@ -60,22 +62,35 @@ class TodoStore:
 
     def read(self) -> list[TodoItem]:
         target = self.path
-        if not target.exists():
-            return []
         try:
-            raw = json.loads(read_utf8_text(target, MAX_FILE_BYTES))
+            legacy = resolve_workspace_path(self.workspace, LEGACY_TODO_PATH)
+            if target.exists():
+                document = decode_markdown_json("TODO", read_utf8_text(target, MAX_FILE_BYTES))
+                if document.get("schema_version") != 1:
+                    raise ValueError
+                raw = document.get("todos")
+            elif legacy.exists():
+                raw = json.loads(read_utf8_text(legacy, MAX_FILE_BYTES))
+            else:
+                return []
             if not isinstance(raw, list):
                 raise ValueError
             records = [_TodoRecord.model_validate(item) for item in raw]
         except (json.JSONDecodeError, ValidationError, ValueError, TypeError):
             raise WorkspaceError("todo data is invalid") from None
-        return [cast(TodoItem, record.model_dump()) for record in records]
+        result = [cast(TodoItem, record.model_dump()) for record in records]
+        if not target.exists():
+            self._persist(result)
+        return result
 
     def _persist(self, items: list[TodoItem]) -> list[TodoItem]:
         target = self.path
         target.parent.mkdir(parents=True, exist_ok=True)
         target = self.path
-        atomic_write_utf8(target, json.dumps(items, ensure_ascii=False, indent=2) + "\n")
+        atomic_write_utf8(
+            target,
+            encode_markdown_json("TODO", {"schema_version": 1, "todos": items}),
+        )
         return items
 
     def start_task(self) -> None:

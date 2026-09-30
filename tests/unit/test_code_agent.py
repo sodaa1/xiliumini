@@ -1,5 +1,6 @@
 import importlib
 import json
+from pathlib import Path
 
 from tests.agent_fakes import ScriptedModel, call, state
 from xiliumini.tools.todo import TodoStore
@@ -98,9 +99,14 @@ def test_rejected_exploration_can_be_recovered_with_valid_execution(monkeypatch,
             "done",
         ],
     )
-    result = module.run_code_agent(state(tmp_path), "implement demo")
+    progress = []
+    result = module.run_code_agent(state(tmp_path), "implement demo", writer=progress.append)
     assert result["tool_events"][1]["ok"] is False
     assert result["ok"] is True
+    assert any(
+        event.get("message") == "code_agent: bash rejected: only python is allowed"
+        for event in progress
+    )
 
 
 def test_executed_failure_not_cleared_by_unrelated_success(monkeypatch, tmp_path):
@@ -163,3 +169,20 @@ def test_later_full_pytest_success_repairs_earlier_green_failure(monkeypatch, tm
         ],
     )
     assert module.run_code_agent(state(tmp_path), "implement with tests")["ok"] is True
+
+
+def test_code_agent_consumes_runtime_memory_and_canonical_notepad_tools(monkeypatch, tmp_path):
+    module, model = install(monkeypatch, tmp_path, ["done"])
+    s = state(tmp_path)
+    s["memory"]["rules"]["fixed_rules"] = ["runtime marker"]
+
+    module.run_code_agent(s, "inspect memory")
+
+    request = json.loads(model.calls[0][1].content)
+    assert request["memory"]["rules"]["fixed_rules"] == ["runtime marker"]
+    assert set(request) == {"task", "instruction", "memory"}
+    assert {tool.name for tool in model.tools} >= {"notepad_read", "notepad_append"}
+    assert module.__file__ is not None
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    assert "xiliumini.memory" not in source
+    assert "build_memory_snapshot" not in source

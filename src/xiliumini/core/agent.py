@@ -59,13 +59,15 @@ def _chunk_events(chunk: Any, session_id: str) -> Iterator[RuntimeEvent]:
 def stream_agent(
     model: Any,
     inputs: GraphState,
+    *,
+    memory_manager: Any,
     checkpointer: Any | None = None,
 ) -> Iterator[RuntimeEvent]:
     """Run the graph and translate LangGraph chunks into stable runtime events."""
 
     if inputs["max_attempts"] < 1:
         raise ValueError("max_attempts must be at least 1")
-    workflow = build_workflow(model, checkpointer=checkpointer)
+    workflow = build_workflow(model, memory_manager, checkpointer=checkpointer)
     chunks = workflow.stream(
         inputs,
         config={

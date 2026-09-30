@@ -32,6 +32,39 @@ def inputs(tmp_path: Path, *, max_attempts: int = 3) -> GraphState:
         "final_answer": "",
         "session_id": SESSION_ID,
         "workspace": tmp_path,
+        "memory": {
+            "rules": {"fixed_rules": [], "user_preferences": []},
+            "working": {
+                "current_node": "planner",
+                "task": "build it",
+                "session_id": SESSION_ID,
+                "plan_summary": "",
+                "todos": [],
+                "acceptance_criteria": [],
+                "research_notes": [],
+                "sources": [],
+                "agent_handoffs": [],
+                "code_agent_summary": "",
+                "verifier_summary": "",
+                "last_error": "",
+                "attempts": {"current": 0, "max": max_attempts},
+            },
+            "history": {
+                "history_summary": "",
+                "notepad_summary": "",
+                "context_summary": "",
+                "compression_events": [],
+            },
+        },
+        "current_node": "planner",
+        "plan_summary": "",
+        "acceptance_criteria": [],
+        "agent_handoffs": [],
+        "code_agent_summary": "",
+        "verifier_summary": "",
+        "last_error": "",
+        "context_summary": "",
+        "compression_events": [],
     }
 
 
@@ -47,10 +80,18 @@ class FakeWorkflow:
 
 def test_stream_agent_calls_workflow_with_both_stream_modes(monkeypatch, tmp_path: Path) -> None:
     workflow = FakeWorkflow([])
-    monkeypatch.setattr(agent_module, "build_workflow", lambda *args, **kwargs: workflow)
+    manager = object()
+    built = []
+
+    def build(*args, **kwargs):
+        built.append((args, kwargs))
+        return workflow
+
+    monkeypatch.setattr(agent_module, "build_workflow", build)
     graph_inputs = inputs(tmp_path)
 
-    assert list(agent_module.stream_agent(object(), graph_inputs)) == []
+    assert list(agent_module.stream_agent(object(), graph_inputs, memory_manager=manager)) == []
+    assert built[0][0][1] is manager
     assert workflow.calls == [
         (
             graph_inputs,
@@ -88,7 +129,7 @@ def test_stream_agent_maps_updates_and_custom_events(monkeypatch, tmp_path: Path
     )
     monkeypatch.setattr(agent_module, "build_workflow", lambda *args, **kwargs: workflow)
 
-    events = list(agent_module.stream_agent(object(), inputs(tmp_path)))
+    events = list(agent_module.stream_agent(object(), inputs(tmp_path), memory_manager=object()))
 
     assert events == [
         PlannerEvent(todos=[], summary="implemented", attempt=1),
@@ -110,7 +151,9 @@ def test_stream_agent_ignores_unknown_and_incomplete_chunks(monkeypatch, tmp_pat
     )
     monkeypatch.setattr(agent_module, "build_workflow", lambda *args, **kwargs: workflow)
 
-    assert list(agent_module.stream_agent(object(), inputs(tmp_path))) == []
+    assert (
+        list(agent_module.stream_agent(object(), inputs(tmp_path), memory_manager=object())) == []
+    )
 
 
 def test_stream_agent_rejects_zero_attempts_before_building(monkeypatch, tmp_path: Path) -> None:
@@ -121,4 +164,8 @@ def test_stream_agent_rejects_zero_attempts_before_building(monkeypatch, tmp_pat
     )
 
     with pytest.raises(ValueError, match="max_attempts must be at least 1"):
-        list(agent_module.stream_agent(object(), inputs(tmp_path, max_attempts=0)))
+        list(
+            agent_module.stream_agent(
+                object(), inputs(tmp_path, max_attempts=0), memory_manager=object()
+            )
+        )

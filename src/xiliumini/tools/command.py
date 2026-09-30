@@ -47,7 +47,7 @@ class CommandTool(BaseTool):
     timeout_seconds: float = 30
     max_output_bytes: int = 20_000
 
-    def _resolve_pytest_args(self, args: list[str]) -> list[str]:
+    def _resolve_pytest_args(self, args: list[str], cwd: Path) -> list[str]:
         resolved: list[str] = []
         index = 0
         while index < len(args):
@@ -75,12 +75,12 @@ class CommandTool(BaseTool):
                 )
             else:
                 path_text, separator, node_id = value.partition("::")
-                target = resolve_workspace_path(self.workspace, path_text)
+                target = resolve_workspace_path(cwd, path_text)
                 if not target.exists():
                     raise CommandExecutionError(
                         "command rejected: pytest target must exist in the workspace"
                     )
-                relative = target.relative_to(self.workspace.resolve()).as_posix()
+                relative = target.relative_to(cwd.resolve()).as_posix()
                 resolved.append(f"{relative}{separator}{node_id}")
             index += 1
         return resolved
@@ -103,18 +103,26 @@ class CommandTool(BaseTool):
         }:
             raise CommandExecutionError("command rejected: unsupported --tb value")
 
-    def _resolve_command(self, argv: list[str]) -> list[str]:
+    def _resolve_cwd(self, cwd: str) -> Path:
+        directory = resolve_workspace_path(self.workspace, cwd, allow_root=True)
+        if not directory.is_dir():
+            raise CommandExecutionError(
+                "command rejected: working directory must be an existing workspace directory"
+            )
+        return directory
+
+    def _resolve_command(self, argv: list[str], cwd: Path) -> list[str]:
         if not argv or argv[0] != "python":
             raise CommandExecutionError("command rejected: only python is allowed")
         if any(token in SHELL_TOKENS for token in argv):
             raise CommandExecutionError("command rejected: shell operators are not allowed")
         if len(argv) >= 3 and argv[1:3] == ["-m", "pytest"]:
-            return [sys.executable, "-m", "pytest", *self._resolve_pytest_args(argv[3:])]
+            return [sys.executable, "-m", "pytest", *self._resolve_pytest_args(argv[3:], cwd)]
         if len(argv) < 2 or argv[1].startswith("-"):
             raise CommandExecutionError(
                 "command rejected: expected a Python script or python -m pytest"
             )
-        script = resolve_workspace_path(self.workspace, argv[1])
+        script = resolve_workspace_path(cwd, argv[1])
         if script.suffix.lower() != ".py" or not script.is_file():
             raise CommandExecutionError(
                 "command rejected: script must be an existing workspace .py file"
@@ -143,12 +151,13 @@ class CommandTool(BaseTool):
             True,
         )
 
-    def execute(self, argv: list[str]) -> CommandResult:
+    def execute(self, argv: list[str], *, cwd: str = ".") -> CommandResult:
         try:
-            command = self._resolve_command(argv)
+            execution_cwd = self._resolve_cwd(cwd)
+            command = self._resolve_command(argv, execution_cwd)
             completed = subprocess.run(
                 command,
-                cwd=self.workspace,
+                cwd=execution_cwd,
                 shell=False,
                 capture_output=True,
                 timeout=self.timeout_seconds,

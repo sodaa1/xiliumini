@@ -17,11 +17,11 @@ def route_after_verifier(state: GraphState) -> Literal["planner", "final"]:
     return "planner"
 
 
-def build_workflow(model: Any, checkpointer: Any | None = None):
+def build_workflow(model: Any, memory_manager: Any, checkpointer: Any | None = None):
     graph = StateGraph(GraphState)
-    graph.add_node("planner", partial(planner_node, model=model))
-    graph.add_node("verifier", partial(verifier_node, model=model))
-    graph.add_node("final", final_node)
+    graph.add_node("planner", partial(planner_node, model=model, memory_manager=memory_manager))
+    graph.add_node("verifier", partial(verifier_node, model=model, memory_manager=memory_manager))
+    graph.add_node("final", partial(final_node, memory_manager=memory_manager))
     graph.add_edge(START, "planner")
     graph.add_edge("planner", "verifier")
     graph.add_conditional_edges(

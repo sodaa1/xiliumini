@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import Field, SecretStr, ValidationError, field_validator
+from pydantic import Field, SecretStr, ValidationError, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from xiliumini.errors import ConfigError
@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     timeout_seconds: float = Field(default=60, gt=0)
     analysis_timeout_seconds: float = Field(default=30, gt=0)
     analysis_max_chars: int = Field(default=8000, ge=1)
+    context_window_tokens: int = Field(default=64_000, gt=0)
+    compression_trigger_ratio: float = Field(default=0.8, gt=0, lt=1)
+    compression_keep_tokens: int = Field(default=8_000, gt=0)
     data_dir: Path = Path(".xiliumini")
 
     @field_validator("api_key", "model", mode="before")
@@ -38,6 +41,15 @@ class Settings(BaseSettings):
         if not isinstance(raw, str) or not raw.strip():
             raise ValueError("must not be blank")
         return raw.strip()
+
+    @field_validator("compression_keep_tokens")
+    @classmethod
+    def keep_budget_must_fit_trigger(cls, value: int, info: ValidationInfo) -> int:
+        context = info.data.get("context_window_tokens", 64_000)
+        ratio = info.data.get("compression_trigger_ratio", 0.8)
+        if value >= int(context * ratio):
+            raise ValueError("must be less than the compression trigger budget")
+        return value
 
     @property
     def model_names(self) -> tuple[str, ...]:

@@ -44,3 +44,13 @@ class NodeOutputError(XiliuminiError):
     """Raised when a model node cannot produce its required structured output."""
 
     code = "node_output_error"
+
+
+class MemorySystemError(XiliuminiError):
+    """Raised when managed memory cannot be safely read or assembled."""
+
+    code = "memory_error"
+
+
+class MemoryBudgetError(MemorySystemError):
+    """Raised when non-compressible planner context exceeds its token budget."""

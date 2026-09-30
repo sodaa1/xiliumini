@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 from xiliumini.config import load_settings
+from xiliumini.errors import MemoryBudgetError
 from xiliumini.providers.openai_compatible import create_chat_model
 
 model_factory: ContextVar[Callable[[], Any] | None] = ContextVar(
@@ -42,6 +43,26 @@ def emit(writer, event: dict[str, Any]) -> None:
         writer(event)
 
 
+def _tool_result_message(agent: str, name: str, ok: bool, data: dict[str, Any]) -> str:
+    if ok:
+        return f"{agent}: {name} ok"
+    if name != "bash":
+        return f"{agent}: {name} failed"
+    if data.get("timed_out"):
+        return f"{agent}: bash timed out"
+    if data.get("truncated"):
+        return f"{agent}: bash failed: output truncated"
+    exit_code = data.get("exit_code")
+    if isinstance(exit_code, int):
+        return f"{agent}: bash failed: exit {exit_code}"
+    stderr = str(data.get("stderr", ""))
+    prefix = "command rejected:"
+    if stderr.startswith(prefix):
+        reason = stderr.removeprefix(prefix).strip()
+        return f"{agent}: bash rejected: {reason}"
+    return f"{agent}: bash failed"
+
+
 def run_react(
     model,
     tools: list[BaseTool],
@@ -52,6 +73,7 @@ def run_react(
     writer=None,
     max_loops: int = 4,
     before_tool: Callable[[str, dict], str | None] | None = None,
+    before_model: Callable[[list[BaseMessage]], list[BaseMessage]] | None = None,
 ) -> dict[str, Any]:
     if max_loops < 1:
         raise ValueError("max_loops must be at least 1")
@@ -62,6 +84,8 @@ def run_react(
     try:
         bound = model.bind_tools(tools)
         for _ in range(max_loops):
+            if before_model is not None:
+                messages = before_model(messages)
             response = bound.invoke(messages)
             if not isinstance(response, AIMessage):
                 raise ValueError("expected AIMessage")
@@ -128,9 +152,11 @@ def run_react(
                         **event,
                         "type": event_type,
                         "stage": agent,
-                        "message": f"{agent}: {name} {'ok' if ok else 'failed'}",
+                        "message": _tool_result_message(agent, name, bool(ok), data),
                     },
                 )
+    except MemoryBudgetError:
+        raise
     except Exception:
         summary = "Agent model request failed"
     return {"ok": completed, "summary": summary, "messages": messages, "tool_events": events}

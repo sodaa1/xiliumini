@@ -8,9 +8,39 @@ from xiliumini.agents.react import payload, unresolved_failures
 def requirements_failure(state) -> str | None:
     if not state.get("supervisor_ok", False):
         return "Supervisor did not finish a valid round"
-    if not state["todos"] or any(t["status"] != "completed" for t in state["todos"]):
-        return "Todos are missing or incomplete"
     task = state["task"].lower()
+    preference_events = [
+        event
+        for event in state["tool_events"]
+        if event["agent"] == "planner" and event["tool"] == "preference_write"
+    ]
+    preference_only_intent = bool(
+        re.match(
+            r"^\s*(?:please\s+)?(?:remember|forget)\b"
+            r"|^\s*(?:set|update)\b.*\bpreference\b"
+            r"|^\s*(?:请)?(?:记住|忘记|设置偏好|更新偏好)",
+            task,
+        )
+    )
+    additional_action = bool(
+        re.search(
+            r"\b(?:and|then|also)\s+(?:implement|build|create|fix|edit|research|search)\b"
+            r"|(?:并|同时)(?:实现|创建|修复|修改|搜索|研究)",
+            task,
+        )
+    )
+    preference_only_complete = bool(
+        preference_only_intent
+        and not additional_action
+        and preference_events
+        and preference_events[-1]["ok"]
+    )
+    if (
+        not state["todos"] or any(t["status"] != "completed" for t in state["todos"])
+    ) and not preference_only_complete:
+        return "Todos are missing or incomplete"
+    if preference_only_complete:
+        return None
     research_task = re.sub(
         r"\b(?:no|without|do not|don't|never)\s+(?:web\s+)?(?:research|search)\b"
         r"|(?:不需要|无需|不要|禁止)(?:进行)?(?:联网)?(?:搜索|研究|查阅|联网)",

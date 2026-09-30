@@ -16,7 +16,8 @@ from xiliumini.tools.workspace import (
     utf8_size,
 )
 
-NOTEPAD_PATH = ".xiliumini/notepad.md"
+NOTEPAD_PATH = "NOTEPAD.md"
+LEGACY_NOTEPAD_PATH = ".xiliumini/notepad.md"
 
 
 class NotepadReadInput(BaseModel):
@@ -37,9 +38,14 @@ class NotepadAppendInput(BaseModel):
 
 def read_notepad(workspace: Path) -> str:
     target = resolve_workspace_path(workspace, NOTEPAD_PATH)
-    if not target.exists():
+    if target.exists():
+        return read_utf8_text(target, MAX_FILE_BYTES)
+    legacy = resolve_workspace_path(workspace, LEGACY_NOTEPAD_PATH)
+    if not legacy.exists():
         return ""
-    return read_utf8_text(target, MAX_FILE_BYTES)
+    content = read_utf8_text(legacy, MAX_FILE_BYTES)
+    atomic_write_utf8(target, content)
+    return content
 
 
 def _error(exc: Exception) -> str:

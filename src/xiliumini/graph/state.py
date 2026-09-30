@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from typing_extensions import TypedDict
 
+from xiliumini.graph.memory import AgentHandoff, CompressionEvent, LayeredMemory
+
 GraphStatus = Literal["planning", "verifying", "passed", "failed"]
 TodoStatus = Literal["pending", "in_progress", "completed", "blocked"]
 
@@ -57,3 +59,13 @@ class GraphState(TypedDict):
     final_answer: str
     session_id: str
     workspace: Path
+    memory: LayeredMemory
+    current_node: Literal["planner", "verifier", "final"]
+    plan_summary: str
+    acceptance_criteria: list[str]
+    agent_handoffs: list[AgentHandoff]
+    code_agent_summary: str
+    verifier_summary: str
+    last_error: str
+    context_summary: str
+    compression_events: list[CompressionEvent]

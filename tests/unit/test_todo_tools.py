@@ -39,6 +39,11 @@ def test_todo_store_persists_stable_ids_and_preserves_existing_status(tmp_path: 
         {"id": "impl", "content": "implement", "status": "pending", "note": ""},
     ]
     assert todo_api().TodoStore(tmp_path).read()[0]["status"] == "completed"
+    text = (tmp_path / "TODO.md").read_text(encoding="utf-8")
+    assert text.startswith("# TODO\n\n```json\n")
+    payload = json.loads(text.split("```json\n", 1)[1].rsplit("\n```", 1)[0])
+    assert payload["schema_version"] == 1
+    assert payload["todos"][0]["id"] == "tests"
 
 
 def test_todo_store_enforces_transitions_and_blocked_reason(tmp_path: Path) -> None:
@@ -98,6 +103,54 @@ def test_corrupt_todo_json_is_not_overwritten(tmp_path: Path) -> None:
     )
     assert result == {"ok": False, "error": "todo data is invalid"}
     assert target.read_text(encoding="utf-8") == "not-json"
+
+
+def test_todo_store_migrates_valid_legacy_file_without_removing_it(tmp_path: Path) -> None:
+    legacy = tmp_path / ".xiliumini" / "todos.json"
+    legacy.parent.mkdir()
+    legacy.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "impl",
+                    "content": "implement",
+                    "status": "pending",
+                    "note": "",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert todo_api().TodoStore(tmp_path).read()[0]["id"] == "impl"
+    assert (tmp_path / "TODO.md").exists()
+    assert legacy.exists()
+
+
+def test_canonical_todo_wins_over_corrupt_legacy_file(tmp_path: Path) -> None:
+    store = todo_api().TodoStore(tmp_path)
+    store.write(drafts(("new", "canonical")))
+    legacy = tmp_path / ".xiliumini" / "todos.json"
+    legacy.parent.mkdir()
+    legacy.write_text("not-json", encoding="utf-8")
+
+    assert store.read()[0]["id"] == "new"
+
+
+def test_corrupt_canonical_todo_is_not_overwritten_or_replaced_by_legacy(
+    tmp_path: Path,
+) -> None:
+    canonical = tmp_path / "TODO.md"
+    original = "# TODO\n\n```json\nnot-json\n```\n"
+    canonical.write_text(original, encoding="utf-8")
+    legacy = tmp_path / ".xiliumini" / "todos.json"
+    legacy.parent.mkdir()
+    legacy.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(WorkspaceError, match="todo data is invalid"):
+        todo_api().TodoStore(tmp_path).read()
+
+    assert canonical.read_text(encoding="utf-8") == original
 
 
 def test_completed_todo_can_be_reopened_for_verifier_feedback(tmp_path):

@@ -5,7 +5,6 @@ import json
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from xiliumini.agents.react import create_agent_model, run_react, unresolved_failures
-from xiliumini.memory import build_memory_snapshot
 from xiliumini.prompts import CODE_AGENT_PROMPT
 from xiliumini.tools import build_tools
 from xiliumini.tools.todo import TodoStore, TodoUpdateTool
@@ -22,7 +21,6 @@ def run_code_agent(state, instruction, *, writer=None, max_loops=10) -> dict:
     }
     try:
         store = TodoStore(state["workspace"])
-        snapshot = build_memory_snapshot({**state, "todos": store.read()})
         messages.extend(
             [
                 SystemMessage(content=CODE_AGENT_PROMPT),
@@ -31,9 +29,7 @@ def run_code_agent(state, instruction, *, writer=None, max_loops=10) -> dict:
                         {
                             "task": state["task"],
                             "instruction": instruction,
-                            "session_id": state["session_id"],
-                            "memory": snapshot,
-                            "research_notes": state.get("research_notes", []),
+                            "memory": state["memory"],
                         },
                         ensure_ascii=False,
                     )

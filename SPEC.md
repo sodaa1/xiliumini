@@ -32,6 +32,7 @@ xiliumini/
 │   │   └── task1.py
 │   ├── graph/
 │   │   ├── state.py
+│   │   ├── memory.py
 │   │   ├── nodes.py
 │   │   └── workflow.py
 │   ├── core/
@@ -87,11 +88,12 @@ Typer CLI → Runtime → core/agent.py → LangGraph → Provider
 
 ### LangGraph
 
-`GraphState` 包含 task、todo、result、execution、graph_state、verification、
-attempt、max_attempts、final_answer、session_id 和 workspace。
+`GraphState` 包含 task、todos、research/tool evidence、result、graph_state、verification、
+attempt、max_attempts、final_answer、session_id、workspace，以及 Runtime 组装的三层
+Memory 和节点摘要字段。
 
-流程为 START → Planner → Actor → Verifier。Verifier 通过或次数耗尽时进入
-Final，否则返回 Actor；Planner 只运行一次。Final 不调用模型，只格式化验证状态。
+流程为 START → Planner → Verifier。Verifier 通过或次数耗尽时进入 Final，否则返回
+Planner；Planner 通过专业子 Agent 工具完成研究和实现。Final 不调用模型，只格式化验证状态。
 `core/agent.py` 同时消费 `stream_mode=["updates", "custom"]`，前者映射节点完成
 事件，后者映射动作级进度。
 
@@ -104,8 +106,9 @@ Final，否则返回 Actor；Planner 只运行一次。Final 不调用模型，�
 - file_write(path, content)：在当前 session 工作区内原子写入 UTF-8 文本。
 - file_edit(path, old_string, new_string, replace_all)：在工作区内执行受控文本替换。
 - grep(pattern, path, glob, max_results)：在工作区内执行有界正则搜索。
-- command(argv)：仅允许 `python <相对脚本.py>` 或 `python -m pytest`，固定工作区、
-  禁止 shell、`python -c`、任意模块、绝对/穿越路径与命令连接符，并限制超时和输出。
+- bash(argv, cwd, phase)：仅允许工作区内 Python 脚本，以及 pytest、Ruff 只读检查、Pyright、
+  compileall、`pip check`；可用受约束的相对 `cwd` 在子项目目录执行。禁止 shell、
+  `python -c`、包安装、任意模块、绝对/穿越路径与命令连接符，并限制超时和输出。
 - 文件工具只接受相对路径，并拒绝目录穿越、绝对路径、盘符、UNC 和符号链接逃逸。
 - 命令限制不是 OS 沙箱；生成的 Python 仍拥有当前进程的用户权限。
 
@@ -230,10 +233,36 @@ Planner。Planner 通过 `TodoWriteTool`、`CallSearchAgentTool`、`CallCodeAgen
   `TAVILY_API_KEY` 时返回明确工具错误。环境变量和 `.env` 均支持。
 - `run_code_agent(state, instruction, *, writer=None, max_loops=10)`：绑定工作区文件工具、
   argv 形式的受限 Bash、TodoUpdate、Notepad；显式维护 todo 状态。Bash 不是操作系统沙箱。
-- todo/notepad 位于 session workspace 的 `.xiliumini/`；新问题重置 todo，重试保留进度。
-  layered memory 当前仅提供快照接口，不实现压缩。
+- 受限 Bash 支持工作区相对 `cwd`，并将拒绝、超时、输出截断和非零退出码分别映射为
+  可诊断的 CLI 进度；不通过 Python subprocess 包装器绕过命令白名单。
+- todo/notepad 已在 Task3 迁移到 session workspace 根目录的 canonical Markdown 文件；
+  新问题重置 todo，重试保留进度。
 - Verifier 同时检查 todo、委派结果、来源和实际检查证据；不能用模型声称成功替代失败、
   超时或截断的必要检查。耗尽尝试也经过 Final，展示未完成项。
 - CLI 展示 Planner attempt 和子 Agent 工具进度；`--no-stream` 只显示最终结果。
 
 以下原有阶段定义保留作为历史规划。
+
+# Task3 实现补充：分层 Memory 与上下文压缩
+
+Runtime 是 Memory 的唯一组装者，并为每个 stream/session 创建独立 MemoryManager，显式
+传递到 workflow 与所有图节点，不使用全局变量或 ContextVar。三层结构为：
+
+1. Rules Layer：固定安全规则与项目级长期偏好。
+2. Working Memory：当前节点/任务/session、plan、todo、验收条件、研究与来源、最近 6 条
+   handoff、code/verifier summary、last error 和 attempts。
+3. History Summary：`HISTORY_SUMMARY.md`、`NOTEPAD.md` 摘要、上一轮 context summary 和
+   最近 3 次 compression event。
+
+固定安全规则 > 当前显式任务指令 > 已保存用户偏好。只有用户明确要求“记住/更新/忘记”
+时 Planner 才调用 `PreferenceWriteTool`；项目偏好存放在
+`<XILIUMINI_DATA_DIR>/USER_PREFERENCES.md`，跨 task/session 生效。
+
+session workspace 的 canonical 文件为 `TODO.md`、`NOTEPAD.md`、
+`HISTORY_SUMMARY.md`。合法旧 `.xiliumini/todos.json` 与 `.xiliumini/notepad.md` 仅在
+canonical 文件不存在时迁移，旧文件保留；损坏输入不覆盖。
+
+Planner 每次模型调用前用 tiktoken 估算 role/content/tool calls。默认在 64,000 token
+窗口的 80% 触发压缩，保留最新 8,000 token；固定规则、完整当前任务和最近消息不由初次
+裁剪移除。摘要持久化成功后才替换消息并记录事件；摘要或写入失败保持原消息。损坏 store
+或不可压缩预算由 Runtime 映射为脱敏 `memory_error`。

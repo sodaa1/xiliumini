@@ -15,7 +15,8 @@ from xiliumini.tools.todo import TodoStore
 
 @dataclass
 class SupervisorContext:
-    state: dict[str, Any]
+    state: Any
+    memory_manager: Any
 
     def delegate(self, agent: str, instruction: str, writer=None) -> str:
         if agent == "code_agent" and not TodoStore(self.state["workspace"]).read():
@@ -34,6 +35,10 @@ class SupervisorContext:
             "attempt": self.state["attempt"],
         }
         self.state["agent_results"].append(summary.copy())
+        self.state["agent_handoffs"] = [
+            *self.state.get("agent_handoffs", []),
+            summary.copy(),
+        ][-6:]
         self.state["tool_events"].extend(result.get("tool_events", []))
         if agent == "search_agent":
             if result["ok"]:
@@ -49,6 +54,14 @@ class SupervisorContext:
         else:
             self.state["todos"] = TodoStore(self.state["workspace"]).read()
             summary["todos"] = self.state["todos"]
+            self.state["code_agent_summary"] = result["summary"]
+        error_prefix = f"{agent}:"
+        if result["ok"]:
+            if str(self.state.get("last_error", "")).startswith(error_prefix):
+                self.state["last_error"] = ""
+        else:
+            self.state["last_error"] = f"{error_prefix} {result['summary']}"
+        self.state["memory"] = self.memory_manager.assemble(self.state, current_node="planner")
         return json.dumps(summary, ensure_ascii=False)
 
 

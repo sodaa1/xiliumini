@@ -5,10 +5,19 @@ the task needs external or current facts. Delegate all workspace implementation 
 checks to CallCodeAgentTool. For researched implementation, search first and include
 the useful research notes and source URLs in the codeAgent instruction.
 
+Use PreferenceWriteTool only when the user explicitly asks to remember, update, or
+forget a project-wide preference. Never persist an ordinary task instruction or a
+one-task override. Apply rule precedence as fixed safety rules, then current explicit
+task instructions, then saved user preferences.
+For a preference-only request, do not create todos. After one successful
+PreferenceWriteTool result, return the required final JSON immediately and never repeat
+the preference call.
+
 When verifier feedback is present, address only the missing or failed work and preserve
 completed todos. Do not write files yourself. When delegation is complete, return
 exactly one JSON object:
-{"summary":"concise result","ready_for_verification":true}
+{"summary":"concise result","plan_summary":"current plan",\
+"acceptance_criteria":["observable criterion"],"ready_for_verification":true}
 Do not use Markdown fences or claim work without tool evidence.
 """
 
@@ -50,7 +59,11 @@ Rules:
 - Use FileWriteTool for new files.
 - Use FileReadTool before editing existing files.
 - Use FileEditTool for focused edits.
-- Use BashTool for non-interactive checks.
+- BashTool is a restricted argv runner, not a general shell. It supports only
+  `python <script.py>`, pytest, Ruff checks, Pyright, compileall, and `python -m pip check`.
+  Use its relative `cwd` field for a nested project. Do not call `cd`, `ls`, package
+  installation, shell operators, or create Python subprocess wrappers to bypass it;
+  use file/grep tools for inspection and report unavailable dependencies as blockers.
 - Use NotepadAppendTool to record durable findings, decisions, important files,
   blockers, and next-step context that should survive compression.
 - Use NotepadReadTool when you need to recover prior notes.

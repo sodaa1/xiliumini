@@ -15,6 +15,7 @@ from xiliumini.tools.file_read import FileReadTool
 from xiliumini.tools.file_write import FileWriteTool
 from xiliumini.tools.grep import GrepTool
 from xiliumini.tools.notepad import NotepadAppendTool, NotepadReadTool
+from xiliumini.tools.preferences import PreferenceWriteTool, UserPreferenceStore
 from xiliumini.tools.todo import TodoStore, TodoUpdateTool, TodoWriteTool
 
 
@@ -59,7 +60,9 @@ __all__ = [
     "get_workspace_tools",
     "NotepadAppendTool",
     "NotepadReadTool",
+    "PreferenceWriteTool",
     "TodoStore",
     "TodoUpdateTool",
     "TodoWriteTool",
+    "UserPreferenceStore",
 ]

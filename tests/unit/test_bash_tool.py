@@ -15,6 +15,21 @@ def test_bash_runs_script_with_phase(tmp_path):
     assert result["phase"] == "demo"
 
 
+def test_bash_runs_script_from_workspace_subdirectory(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "demo.py").write_text("print('nested')", encoding="utf-8")
+
+    result = json.loads(
+        module.BashTool(workspace=tmp_path).invoke(
+            {"argv": ["python", "demo.py"], "cwd": "project", "phase": "demo"}
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["stdout"] == "nested\n"
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -41,11 +56,47 @@ def test_bash_check_commands_use_fixed_cwd_and_no_shell(monkeypatch, tmp_path, a
 @pytest.mark.parametrize(
     "argv",
     [
+        ["python", "-m", "compileall", "-q", "."],
+        ["python", "-m", "pip", "check"],
+    ],
+)
+def test_bash_runs_allowlisted_diagnostics_in_workspace_subdirectory(monkeypatch, tmp_path, argv):
+    project = tmp_path / "project"
+    project.mkdir()
+    observed = []
+
+    def run(command, **kwargs):
+        observed.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, b"checked", b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    result = module.BashTool(workspace=tmp_path).execute(argv, cwd="project")
+
+    assert result.ok is True
+    assert observed[0][0][1:] == argv[1:]
+    assert observed[0][1]["cwd"] == project
+
+
+@pytest.mark.parametrize("cwd", ["../outside", "C:/outside", "missing"])
+def test_bash_rejects_invalid_working_directory(tmp_path, cwd):
+    result = module.BashTool(workspace=tmp_path).execute(["python", "-m", "pip", "check"], cwd=cwd)
+
+    assert result.ok is False
+    assert result.exit_code is None
+    assert result.stderr.startswith("command rejected:")
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
         ["cmd", "/c", "dir"],
         ["python", "-m", "ruff", "check", "../outside"],
         ["python", "-m", "ruff", "check", "--fix"],
         ["python", "-m", "ruff", "format", "."],
         ["python", "-m", "pyright", "--pythonpath", "C:/outside"],
+        ["python", "-m", "pip", "install", "flask"],
+        ["python", "-m", "compileall", "--invalidation-mode", "unchecked-hash", "."],
         ["python", "-m", "pytest", ";", "dir"],
     ],
 )

@@ -1381,6 +1381,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "rich" },
     { name = "tavily-python" },
+    { name = "tiktoken" },
     { name = "typer" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
@@ -1402,6 +1403,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0,<2" },
     { name = "rich", specifier = ">=13.9,<15" },
     { name = "tavily-python", specifier = ">=0.8,<0.9" },
+    { name = "tiktoken", specifier = ">=0.12,<1" },
     { name = "typer", specifier = ">=0.15,<1" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2025.2" },
 ]
