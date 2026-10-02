@@ -151,6 +151,7 @@ def run_react(
                     {
                         **event,
                         "type": event_type,
+                        "requires_approval": data.get("requires_approval") is True,
                         "stage": agent,
                         "message": _tool_result_message(agent, name, bool(ok), data),
                     },

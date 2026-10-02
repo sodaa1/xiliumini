@@ -1,1 +1,5 @@
-"""Trace persistence is implemented in Task 4."""
+"""Compatibility export for canonical trace persistence."""
+
+from xiliumini.core.trace import TraceRecorder
+
+__all__ = ["TraceRecorder"]

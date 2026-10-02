@@ -1,8 +1,10 @@
 import json
 
+import pytest
 from langchain_core.messages import ToolMessage
 
 from tests.agent_fakes import ScriptedModel, call, state
+from xiliumini.errors import MemoryBudgetError, MemorySystemError, WorkspaceError
 from xiliumini.graph.memory import MemoryLimits, MemoryManager
 from xiliumini.graph.nodes import final_node, planner_node, verifier_node
 from xiliumini.graph.state import ToolEvent
@@ -443,3 +445,134 @@ def test_supervisor_context_bounds_handoffs_and_updates_agent_status(monkeypatch
     assert s["code_agent_summary"] == "result step 6"
     assert s["last_error"] == ""
     assert s["memory"]["working"]["agent_handoffs"] == s["agent_handoffs"]
+
+
+def test_canonical_handoff_is_once_after_result_and_safe(monkeypatch, tmp_path):
+    import xiliumini.tools.subagent_tools as delegates
+
+    events = []
+
+    def search(_state, instruction, **kwargs):
+        kwargs["writer"]({"type": "tool_result"})
+        return {"ok": False, "summary": "secret sk-test " + str(tmp_path) + "x" * 10000}
+
+    monkeypatch.setattr(delegates, "run_search_agent", search)
+    context = SupervisorContext(state(tmp_path), memory_manager(tmp_path))
+    context.delegate("search_agent", "private instruction", events.append)
+    assert [event["type"] for event in events] == ["tool_result", "handoff"]
+    handoff = events[-1]
+    assert handoff["agent"] == "search_agent"
+    assert handoff["attempt"] == 1
+    assert handoff["ok"] is False
+    assert len(handoff["summary"]) <= 512
+    assert "secret" not in json.dumps(handoff)
+    assert str(tmp_path) not in json.dumps(handoff)
+    assert "private instruction" not in json.dumps(handoff)
+
+
+@pytest.mark.parametrize("outcome", ["success", "exception", "missing_todos"])
+def test_handoff_for_every_delegation_outcome(monkeypatch, tmp_path, outcome):
+    import xiliumini.tools.subagent_tools as delegates
+
+    if outcome != "missing_todos":
+        TodoStore(tmp_path).write([{"id": "impl", "content": "implement"}])
+
+    def code(*args, **kwargs):
+        if outcome == "exception":
+            raise RuntimeError("private failure")
+        return {"ok": True, "summary": "done", "tool_events": []}
+
+    monkeypatch.setattr(delegates, "run_code_agent", code)
+    events = []
+    context = SupervisorContext(state(tmp_path), memory_manager(tmp_path))
+    result = json.loads(context.delegate("code_agent", "task", events.append))
+    if outcome == "missing_todos":
+        assert events == []
+        assert result["ok"] is False
+        return
+    assert len(events) == 1
+    assert events[0]["type"] == "handoff"
+    assert events[0]["ok"] is result["ok"]
+
+
+@pytest.mark.parametrize("error_type", [MemoryBudgetError, MemorySystemError])
+@pytest.mark.parametrize("runner_fails", [False, True])
+def test_handoff_precedes_failed_memory_assembly(monkeypatch, tmp_path, error_type, runner_fails):
+    import xiliumini.tools.subagent_tools as delegates
+
+    events = []
+
+    def search(_state, instruction, **kwargs):
+        kwargs["writer"]({"type": "tool_result"})
+        if runner_fails:
+            raise RuntimeError("private secret")
+        return {"ok": True, "summary": "private " + str(tmp_path), "tool_events": []}
+
+    class BrokenMemory:
+        def assemble(self, current, **kwargs):
+            assert len(current["agent_results"]) == 1
+            raise error_type("private secret")
+
+    monkeypatch.setattr(delegates, "run_search_agent", search)
+    context = SupervisorContext(state(tmp_path), BrokenMemory())
+    with pytest.raises(error_type):
+        context.delegate("search_agent", "private instruction", events.append)
+    assert [event["type"] for event in events] == ["tool_result", "handoff"]
+    assert events[-1] == {
+        "type": "handoff",
+        "agent": "search_agent",
+        "attempt": 1,
+        "ok": not runner_fails,
+        "summary": "Delegation failed" if runner_fails else "Delegation completed",
+    }
+
+
+def test_real_code_runner_corrupt_todo_still_emits_handoff(monkeypatch, tmp_path):
+    import xiliumini.agents.code_agent as code
+
+    TodoStore(tmp_path).write([{"id": "impl", "content": "implement"}])
+    model = ScriptedModel(
+        [
+            call("file_write", {"path": "TODO.md", "content": "invalid private secret"}),
+            "done",
+        ]
+    )
+    monkeypatch.setattr(code, "create_agent_model", lambda: model)
+    events = []
+    context = SupervisorContext(state(tmp_path), memory_manager(tmp_path))
+    with pytest.raises(WorkspaceError, match="todo data is invalid"):
+        context.delegate("code_agent", "private instruction", events.append)
+    assert len(model.calls) == 2
+    assert [event["type"] for event in events] == ["tool_call", "tool_result", "handoff"]
+    assert events[-1] == {
+        "type": "handoff",
+        "agent": "code_agent",
+        "attempt": 1,
+        "ok": False,
+        "summary": "Delegation failed",
+    }
+
+
+def test_search_handoff_precedes_failed_state_postprocessing(monkeypatch, tmp_path):
+    import xiliumini.tools.subagent_tools as delegates
+
+    events = []
+
+    def search(*args, **kwargs):
+        kwargs["writer"]({"type": "tool_result"})
+        return {"ok": True, "summary": "private secret", "sources": []}
+
+    class BrokenList(list):
+        def append(self, value):
+            raise MemorySystemError("controlled state failure")
+
+    monkeypatch.setattr(delegates, "run_search_agent", search)
+    current = state(tmp_path)
+    current["agent_results"] = BrokenList()
+    with pytest.raises(MemorySystemError):
+        SupervisorContext(current, memory_manager(tmp_path)).delegate(
+            "search_agent", "private instruction", events.append
+        )
+    assert [event["type"] for event in events] == ["tool_result", "handoff"]
+    assert events[-1]["summary"] == "Delegation completed"
+    assert "private" not in json.dumps(events[-1])

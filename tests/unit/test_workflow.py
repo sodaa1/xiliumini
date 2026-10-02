@@ -1,3 +1,5 @@
+import pytest
+
 import xiliumini.graph.workflow as workflow
 from tests.agent_fakes import state
 
@@ -52,3 +54,26 @@ def test_workflow_exhaustion_still_reaches_final(monkeypatch, tmp_path):
     )
     assert calls == ["planner", "verifier", "planner", "verifier", "final"]
     assert result["final_answer"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "entry,attempt,status,expected",
+    [
+        ("verifier", 1, "verifying", ["verifier", "final"]),
+        ("planner", 1, "failed", ["planner", "verifier", "final"]),
+        ("final", 1, "passed", ["final"]),
+        ("final", 3, "failed", ["final"]),
+    ],
+)
+def test_resume_entry(monkeypatch, tmp_path, entry, attempt, status, expected):
+    manager = object()
+    calls = install(monkeypatch, 1, manager)
+    workflow.build_workflow(object(), manager).invoke(
+        state(tmp_path, resume_node=entry, attempt=attempt, graph_state=status)
+    )
+    assert calls == expected
+
+
+def test_resume_entry_rejects_unknown_node(tmp_path):
+    with pytest.raises(ValueError, match="resume node"):
+        workflow.build_workflow(object(), object()).invoke(state(tmp_path, resume_node="actor"))

@@ -8,6 +8,32 @@ from xiliumini.config import Settings
 from xiliumini.errors import ConfigError
 
 
+def test_settings_accept_harness_modes_and_optional_trace_id(isolated_cwd: Path) -> None:
+    env = {"XILIUMINI_API_KEY": "secret", "XILIUMINI_MODEL": "primary"}
+    defaults = Settings.from_env(env)
+    assert (defaults.checkpoint_mode, defaults.trace_mode, defaults.trace_id) == (
+        "light",
+        "full",
+        None,
+    )
+    settings = Settings.from_env(
+        {
+            **env,
+            "XILIUMINI_CHECKPOINT_MODE": "strict",
+            "XILIUMINI_TRACE_MODE": "summary",
+            "XILIUMINI_TRACE_ID": "trace-one",
+        }
+    )
+    assert (settings.checkpoint_mode, settings.trace_mode, settings.trace_id) == (
+        "strict",
+        "summary",
+        "trace-one",
+    )
+    for name in ("XILIUMINI_CHECKPOINT_MODE", "XILIUMINI_TRACE_MODE"):
+        with pytest.raises(ConfigError, match=name):
+            Settings.from_env({**env, name: "invalid"})
+
+
 def test_settings_reports_both_missing_required_fields(isolated_cwd: Path) -> None:
     with pytest.raises(ConfigError) as caught:
         Settings.from_env({})

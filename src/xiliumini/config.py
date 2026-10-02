@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from pydantic import Field, SecretStr, ValidationError, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     compression_trigger_ratio: float = Field(default=0.8, gt=0, lt=1)
     compression_keep_tokens: int = Field(default=8_000, gt=0)
     data_dir: Path = Path(".xiliumini")
+    checkpoint_mode: Literal["light", "strict", "off"] = "light"
+    trace_mode: Literal["full", "summary", "off"] = "full"
+    trace_id: str | None = None
+
+    @field_validator("trace_id", mode="before")
+    @classmethod
+    def blank_trace_id_is_unset(cls, value: Any) -> Any:
+        return None if isinstance(value, str) and not value.strip() else value
 
     @field_validator("api_key", "model", mode="before")
     @classmethod

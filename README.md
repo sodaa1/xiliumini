@@ -11,6 +11,7 @@ then continues planning from their results. Failed verification returns to the S
 - Python 3.12 or newer (managed automatically by `uv` when needed)
 - [uv](https://docs.astral.sh/uv/)
 - An API key and model for an OpenAI-compatible endpoint
+- Git available on PATH for checkpoints (the default); checkpoint `off` needs no Git
 
 ## Install
 
@@ -37,6 +38,10 @@ XILIUMINI_DATA_DIR=.xiliumini
 XILIUMINI_CONTEXT_WINDOW_TOKENS=64000
 XILIUMINI_COMPRESSION_TRIGGER_RATIO=0.8
 XILIUMINI_COMPRESSION_KEEP_TOKENS=8000
+XILIUMINI_CHECKPOINT_MODE=light
+XILIUMINI_TRACE_MODE=full
+# Optional: a unique ID for one run; reuse is rejected
+# XILIUMINI_TRACE_ID=my-run
 # Optional: required only for web research
 TAVILY_API_KEY=your-tavily-key
 ```
@@ -69,6 +74,22 @@ Run the Supervisor workflow. `--max-attempts` limits Supervisor rounds and defau
 xiliumini ask "帮我实现一个 Conway's Game of Life，要求 TDD：先写测试，再写实现，最后跑 demo" --max-attempts 3
 xiliumini ask "Calculate (17 + 5) * 3" --no-stream
 ```
+
+Harness controls are root options, so place them before `ask` or `chat` (the existing
+`ask --max-attempts` spelling remains supported):
+
+```powershell
+xiliumini --workspace ".xiliumini/workspaces/my-task" --max-attempts 5 `
+  --approval-mode inline --checkpoint-mode strict --trace-mode on ask "Implement it"
+```
+
+`--approval-mode` accepts `inline`, `auto`, or `deny`; `--checkpoint-mode` accepts
+`light`, `strict`, or `off`; the CLI `--trace-mode` accepts `on` or `off`, where `on`
+maps to the Runtime `full` mode. Runtime/Settings still support `summary`. An explicit
+workspace must resolve below `<XILIUMINI_DATA_DIR>/workspaces`, cannot be that root,
+and cannot traverse or use link components. `--workspace` and `--resume` are mutually
+exclusive. If checkpoint/trace flags are omitted, existing Settings/environment values
+remain in effect; an explicitly supplied root flag overrides them.
 
 Normal output identifies every completed graph stage:
 
@@ -144,12 +165,24 @@ Tool paths
 must be relative to that session workspace; absolute paths, parent traversal, UNC
 paths, drive-qualified paths, and symlink escapes are rejected.
 
-The Bash tool accepts only `python <workspace-relative.py>`, `python -m pytest ...`,
+The Bash tool accepts `python <workspace-relative.py>`, `python -m pytest ...`,
 `python -m ruff check ...`, `python -m ruff format --check ...`, `python -m pyright ...`,
 `python -m compileall ...`, and `python -m pip check`. Its optional `cwd` is a
 workspace-relative directory, which allows checks to run from a nested project without
-using `cd` or a shell wrapper. It does not install packages or accept arbitrary shell
-commands. Rejections, timeouts, truncated output, and non-zero exits have distinct CLI
+using `cd` or a shell wrapper. Recognized installation commands (`pip install`,
+`python -m pip install`, `uv add/sync/pip install`, `npm/pnpm install`, `yarn install/add`),
+downloads (`curl`, `wget`), and development servers (`uvicorn`, `python -m http.server`)
+require approval. BashTool's `inline` default invokes an application-supplied
+`approval_handler(ApprovalRequest) -> ApprovalDecision`; without a handler it rejects
+the command. `auto` permits recognized risky commands and `deny` rejects them.
+The CLI supplies an interactive handler in `inline` mode: it displays the risk and exact
+command, defaults to denial, and waits for `typer.confirm`. `auto` and `deny` never prompt.
+Handlers are run-local ContextVar data and are not written to GraphState, checkpoints, or
+traces. These modes are CLI/programmatic options rather than Settings environment variables.
+Risky results carry
+`requires_approval=True`, including refusals. Approval preserves argv execution,
+workspace-relative cwd, timeout and output bounds; shell operators remain forbidden.
+Rejections, timeouts, truncated output, and non-zero exits have distinct CLI
 progress messages.
 
 The tool uses argv without a shell and bounds runtime and output. This is not an OS
@@ -165,8 +198,8 @@ xiliumini chat --help
 xiliumini sessions
 ```
 
-Persistent chat sessions and traces remain separate roadmap work; Task3 here implements
-Runtime-managed working/history memory rather than full chat transcript persistence.
+Persistent chat transcripts remain roadmap work; Task3 implements Runtime-managed
+working/history memory. Task4 adds checkpoint recovery and execution traces below.
 The legacy analysis Agent is no longer registered in the Supervisor path. Each specialist
 has an independent bounded ReAct conversation (search: 4 loops, code: 10 loops).
 Planner has an 8-loop budget per round. Only summaries, research and tool evidence enter
@@ -176,6 +209,109 @@ Shared state, nodes, and graph routing live in `src/xiliumini/graph/state.py`,
 `nodes.py`, and `workflow.py`. `src/xiliumini/core/agent.py` translates LangGraph
 `updates` and `custom` streams into stable CLI events. Modules under
 `src/xiliumini/agents/` are specialist sub-Agents invoked only for focused work.
+
+The Typer entry point is `src/xiliumini/cli/__init__.py` (there is no separate
+`cli/app.py`). Programmatic integrations can import `stream_agent_events` from
+`xiliumini.core` or `xiliumini.core.agent`:
+
+```python
+from pathlib import Path
+
+from xiliumini.core import stream_agent_events
+
+for item in stream_agent_events(
+    "Implement the requested change",
+    workspace=Path(".xiliumini/workspaces/my-task"),
+    checkpoint_mode="light",
+    trace_mode="on",
+):
+    print(item)  # {"type": "custom_event" | "graph_event", "event": {...}}
+```
+
+This compatibility iterator delegates to Runtime and adapts each stable RuntimeEvent once;
+it does not create a second Checkpoint or Trace recorder. Pass the same path as
+`workspace` and `resume_workspace` to resume; conflicting paths produce a redacted
+workspace error.
+
+## Checkpoints and execution traces
+
+Each run owns independent recorders, including interleaved sessions on one Runtime.
+Checkpoint defaults to `light`; Trace defaults to `full`. Omitted Settings values use
+these defaults; invalid or blank environment modes raise a configuration error.
+Only internal mode normalizers and direct recorder/runtime contexts fall back to defaults
+for invalid modes. Blank optional `XILIUMINI_TRACE_ID` is treated as unset and generates an ID.
+
+| Setting | Mode | Behavior |
+| --- | --- | --- |
+| `XILIUMINI_CHECKPOINT_MODE` | `light` | Save state summary, recovery guide and Git snapshot at start, after each node and at termination |
+| | `strict` | Also save `state.json` and append each custom/node event to checkpoint `events.jsonl` |
+| | `off` | No checkpoint I/O or Git; resume is refused |
+| `XILIUMINI_TRACE_MODE` | `full` | Record all received custom events and node updates plus lifecycle events |
+| | `summary` | Persist lifecycle, nodes, failures, approvals, handoffs and checkpoints; count all received canonical tool events |
+| | `off` | No trace I/O |
+
+```text
+<XILIUMINI_DATA_DIR>/workspaces/<session-id>/
+├── TODO.md / NOTEPAD.md / HISTORY_SUMMARY.md
+└── .xiliumini/
+    ├── checkpoints/
+    │   ├── checkpoint.json       # latest metadata, state_summary and SHA-256 manifest
+    │   ├── RECOVERY.md           # task, status, manifest, commit and resume command
+    │   ├── repo.git/             # independent local Git history
+    │   ├── state.json           # strict only
+    │   └── events.jsonl         # strict only
+    └── traces/<trace-id>/
+        ├── events.jsonl         # sequenced UTC events with redacted payloads
+        ├── trace.json           # run statistics and bounded timeline
+        └── timeline.md          # human-readable summary
+```
+
+Resume using the same data-directory configuration as the saved run:
+
+```powershell
+xiliumini --resume ".xiliumini/workspaces/<session-id>"
+```
+
+`--resume` is a root option and cannot accompany a subcommand or `--workspace`. The saved
+task is reused; root `--max-attempts` defaults to three and can override the recovery limit.
+Programmatic
+`Runtime.resume(workspace, task=..., max_attempts=...)` allows overrides. Recovery selects
+Verifier after Planner, Planner after retryable failed verification, and Final after
+successful/exhausted verification or a Final checkpoint. It does not resume inside a tool.
+
+Recovery restores checkpoint file bytes and **deletes ordinary files added since that
+checkpoint**, including ignored files. Back up changes you want to keep before resuming.
+Root `.xiliumini/` and `.git/` (including case variants) are preserved, as are unrelated empty directories; a directory
+occupying a target file path is removed to restore that file. Empty directories are not
+stored by Git, so a checkpoint-era empty directory removed before recovery is not recreated.
+Schema, all required GraphState fields/types, paths and commit are validated before changes;
+a pre-restore commit enables
+best-effort rollback on failure. This is a single-recorder protocol without concurrent-writer
+locking or atomic recovery from hard process termination. Retained recovery backups/internal
+Git history support manual inspection when rollback also fails.
+
+Trace statistics include UTC `started_at`/`ended_at`, monotonic `duration_ms`, `status`,
+`node_visits`, `tool_calls`, `failed_tool_calls`, `approval_count`, `checkpoint_count` and
+`handoff_count`. Failure and approval counters require `ok is False` and
+`requires_approval is True`; approval_count counts risky tool results, not approval prompts.
+`timeline_head` keeps the first 20 events, `timeline_tail` the following/latest 80 without
+duplicates, and `timeline_omitted` counts the gap above 100 persisted events.
+
+Statuses are `completed`, `failed` and `interrupted`. Closing a stream, GeneratorExit or
+Ctrl+C records interrupted; SystemExit records failed. Finalization attempts Trace.end
+once and preserves the original exception. The child graph stream is explicitly closed
+and its background nodes stopped before the terminal snapshot and trace end.
+Checkpoint manifests hash immutable committed blobs, so background file changes cannot
+produce a manifest that disagrees with its saved commit. Enabled persistence errors stop execution with
+stable `checkpoint_error` or `trace_error`, rather than silently disabling recording.
+The CLI returns 1 for these errors/interruption and 2 for configuration/option errors,
+without a traceback. Damaged or out-of-bounds recovery fails before file mutation.
+
+State/event files redact sensitive keys and SecretStr, replace the workspace absolute
+path with `<workspace>`, and bound text. RECOVERY.md intentionally includes a quoted
+absolute resume command. Git snapshots preserve ordinary file bytes, including potentially
+sensitive files; metadata redaction does not redact snapshot contents. Keep the workspace
+and its internal Git history private.
 
 ## Development
 

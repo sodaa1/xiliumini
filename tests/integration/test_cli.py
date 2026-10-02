@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 import xiliumini.cli as cli_module
 from xiliumini import __version__
 from xiliumini.cli import app
 from xiliumini.config import Settings
+from xiliumini.core.approval import ApprovalDecision, ApprovalRequest
 from xiliumini.errors import ConfigError
 from xiliumini.events import (
     ErrorEvent,
@@ -16,6 +18,7 @@ from xiliumini.events import (
     ProgressEvent,
     VerifierEvent,
 )
+from xiliumini.tools.bash_tool import BashTool
 
 runner = CliRunner()
 
@@ -60,10 +63,14 @@ class FakeRuntime:
         self.calls.append((question, session_id, max_attempts))
         yield from self.events
 
+    def stream_workspace(self, question: str, workspace: Path, max_attempts: int = 3):
+        self.calls.append((question, str(workspace), max_attempts))
+        yield from self.events
 
-def install_runtime(monkeypatch, tmp_path: Path, runtime: FakeRuntime) -> None:
+
+def install_runtime(monkeypatch, tmp_path: Path, runtime) -> None:
     monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
-    monkeypatch.setattr(cli_module, "create_runtime", lambda _settings: runtime)
+    monkeypatch.setattr(cli_module, "create_runtime", lambda _settings, **_kwargs: runtime)
 
 
 def test_cli_help_and_version() -> None:
@@ -73,6 +80,15 @@ def test_cli_help_and_version() -> None:
     assert help_result.exit_code == 0
     for command in ("doctor", "ask", "chat", "sessions"):
         assert command in help_result.stdout
+    for option in (
+        "--workspace",
+        "--max-attempts",
+        "--approval-mode",
+        "--checkpoint-mode",
+        "--trace-mode",
+        "--resume",
+    ):
+        assert option in help_result.stdout
     assert version_result.exit_code == 0
     assert __version__ in version_result.stdout
 
@@ -87,6 +103,234 @@ def test_doctor_missing_config_exits_two_without_traceback(monkeypatch, tmp_path
     assert result.exit_code == 2
     assert "XILIUMINI_API_KEY" in result.stdout
     assert "Traceback" not in result.stdout
+
+
+def test_cli_resume_path_with_spaces(monkeypatch, tmp_path):
+    class ResumeRuntime(FakeRuntime):
+        def resume(self, workspace, *, max_attempts=3):
+            assert workspace == tmp_path / "workspace with spaces"
+            assert max_attempts == 3
+            yield FinalEvent(text="restored", session_id="saved")
+
+    install_runtime(monkeypatch, tmp_path, ResumeRuntime([]))
+    result = runner.invoke(app, ["--resume", str(tmp_path / "workspace with spaces")])
+    assert result.exit_code == 0
+    assert "Final: restored" in result.stdout
+
+
+def test_cli_resume_uses_root_attempt_and_harness_options(monkeypatch, tmp_path):
+    captured = []
+
+    class ResumeRuntime(FakeRuntime):
+        def resume(self, workspace, *, max_attempts=3):
+            assert workspace == tmp_path / "workspaces" / "saved"
+            assert max_attempts == 6
+            yield FinalEvent(text="restored", session_id="saved")
+
+    monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
+
+    def create(_settings, **overrides):
+        captured.append(overrides)
+        return ResumeRuntime([])
+
+    monkeypatch.setattr(cli_module, "create_runtime", create)
+    result = runner.invoke(
+        app,
+        [
+            "--max-attempts",
+            "6",
+            "--approval-mode",
+            "auto",
+            "--checkpoint-mode",
+            "off",
+            "--trace-mode",
+            "off",
+            "--resume",
+            str(tmp_path / "workspaces" / "saved"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured == [
+        {
+            "approval_mode": "auto",
+            "approval_handler": None,
+            "checkpoint_mode": "off",
+            "trace_mode": "off",
+        }
+    ]
+
+
+def test_cli_resume_conflicts_with_subcommand(monkeypatch):
+    def forbidden():
+        raise AssertionError("configuration should not load")
+
+    monkeypatch.setattr(cli_module, "load_settings", forbidden)
+    result = runner.invoke(app, ["--resume", "private path", "ask", "question"])
+    assert result.exit_code == 2
+    assert "private path" not in result.output
+    assert "Traceback" not in result.output
+
+
+def test_cli_workspace_conflicts_with_resume_before_loading_config(monkeypatch, tmp_path):
+    def forbidden():
+        raise AssertionError("configuration should not load")
+
+    monkeypatch.setattr(cli_module, "load_settings", forbidden)
+    workspace = tmp_path / "private-one"
+    resume = tmp_path / "private-two"
+
+    result = runner.invoke(
+        app,
+        ["--workspace", str(workspace), "--resume", str(resume)],
+    )
+
+    assert result.exit_code == 2
+    assert "--workspace cannot be combined with --resume" in result.stdout
+    assert str(workspace) not in result.output
+    assert str(resume) not in result.output
+
+
+def test_root_harness_options_apply_to_ask_and_explicit_workspace(monkeypatch, tmp_path):
+    runtime = FakeRuntime([FinalEvent(text="done", session_id="session")])
+    captured = []
+    monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
+
+    def create(_settings, **overrides):
+        captured.append(overrides)
+        return runtime
+
+    monkeypatch.setattr(cli_module, "create_runtime", create)
+    workspace = tmp_path / "workspaces" / "manual"
+
+    result = runner.invoke(
+        app,
+        [
+            "--workspace",
+            str(workspace),
+            "--max-attempts",
+            "5",
+            "--approval-mode",
+            "deny",
+            "--checkpoint-mode",
+            "strict",
+            "--trace-mode",
+            "off",
+            "ask",
+            "question",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert runtime.calls == [("question", str(workspace), 5)]
+    assert captured == [
+        {
+            "approval_mode": "deny",
+            "approval_handler": None,
+            "checkpoint_mode": "strict",
+            "trace_mode": "off",
+        }
+    ]
+
+
+def test_inline_approval_handler_prompts_once_and_returns_decision(monkeypatch, tmp_path):
+    runtime = FakeRuntime([FinalEvent(text="done", session_id="session")])
+    captured = []
+    monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
+
+    def create(_settings, **overrides):
+        captured.append(overrides)
+        return runtime
+
+    monkeypatch.setattr(cli_module, "create_runtime", create)
+    prompts = []
+
+    def confirm(*args, **kwargs):
+        prompts.append((args, kwargs))
+        return False
+
+    monkeypatch.setattr(cli_module.typer, "confirm", confirm)
+
+    result = runner.invoke(app, ["ask", "question"])
+    handler = captured[0]["approval_handler"]
+    decision = handler(
+        ApprovalRequest(
+            id="approval-12345678",
+            command="pip install demo",
+            risk_reason="Python package installation",
+        )
+    )
+
+    assert result.exit_code == 0
+    assert captured[0]["approval_mode"] == "inline"
+    assert decision == ApprovalDecision(approved=False, reason="Denied by user.")
+    assert prompts == [(("Approve this command?",), {"default": False})]
+    assert captured[0]["checkpoint_mode"] is None
+    assert captured[0]["trace_mode"] is None
+
+
+def test_inline_approval_abort_interrupts_bash_tool(monkeypatch, tmp_path):
+    def abort(*args, **kwargs):
+        raise cli_module.typer.Abort()
+
+    monkeypatch.setattr(cli_module.typer, "confirm", abort)
+    tool = BashTool(
+        workspace=tmp_path,
+        approval_mode="inline",
+        approval_handler=cli_module._inline_approval,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        tool.execute(["pip", "install", "demo"])
+
+
+@pytest.mark.parametrize("mode", ["auto", "deny"])
+def test_non_inline_approval_modes_never_install_prompt_handler(monkeypatch, tmp_path, mode):
+    runtime = FakeRuntime([FinalEvent(text="done", session_id="session")])
+    captured = []
+    monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
+    monkeypatch.setattr(
+        cli_module.typer,
+        "confirm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not prompt")),
+    )
+
+    def create(_settings, **overrides):
+        captured.append(overrides)
+        return runtime
+
+    monkeypatch.setattr(cli_module, "create_runtime", create)
+
+    result = runner.invoke(app, ["--approval-mode", mode, "ask", "question"])
+
+    assert result.exit_code == 0
+    assert captured[0]["approval_mode"] == mode
+    assert captured[0]["approval_handler"] is None
+
+
+def test_cli_foreign_workspace_error_is_redacted(monkeypatch, tmp_path):
+    from xiliumini.runtime import Runtime
+
+    install_runtime(monkeypatch, tmp_path, Runtime(object(), data_dir=tmp_path))
+    foreign = tmp_path.parent / "private-workspace"
+
+    result = runner.invoke(app, ["--workspace", str(foreign), "ask", "question"])
+
+    assert result.exit_code == 1
+    assert "workspace_error" in result.stdout
+    assert str(foreign) not in result.output
+
+
+def test_cli_resume_invalid_paths_are_redacted(monkeypatch, tmp_path):
+    from xiliumini.runtime import Runtime
+
+    install_runtime(monkeypatch, tmp_path, Runtime(object(), data_dir=tmp_path))
+    for workspace in (tmp_path / "missing", tmp_path):
+        result = runner.invoke(app, ["--resume", str(workspace)])
+        assert result.exit_code == 1
+        assert "checkpoint_error" in result.stdout
+        assert str(tmp_path) not in result.output
+        assert "Traceback" not in result.output
 
 
 def test_ask_uses_default_and_explicit_max_attempts(monkeypatch, tmp_path: Path) -> None:
@@ -171,6 +415,16 @@ def test_chat_uses_default_attempts_and_reuses_session(monkeypatch, tmp_path: Pa
     assert [call[0] for call in runtime.calls] == ["hello", "follow up"]
     assert runtime.calls[0][1] == runtime.calls[1][1]
     assert [call[2] for call in runtime.calls] == [3, 3]
+
+
+def test_chat_uses_root_max_attempts(monkeypatch, tmp_path: Path) -> None:
+    runtime = FakeRuntime([FinalEvent(text="done", session_id="session")])
+    install_runtime(monkeypatch, tmp_path, runtime)
+
+    result = runner.invoke(app, ["--max-attempts", "6"], input="hello\n/exit\n")
+
+    assert result.exit_code == 0
+    assert [call[2] for call in runtime.calls] == [6]
 
 
 def test_interactive_new_changes_session(monkeypatch, tmp_path: Path) -> None:

@@ -10,6 +10,52 @@ from xiliumini.errors import WorkspaceError
 MAX_FILE_BYTES = 1_000_000
 
 
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or path.is_junction()
+
+
+def create_explicit_workspace(data_dir: Path, workspace: Path) -> Path:
+    """Create/reuse a named workspace contained by the configured data directory."""
+
+    try:
+        if ".." in workspace.parts:
+            raise WorkspaceError("workspace must stay inside the data directory")
+        data_root = data_dir.expanduser().resolve()
+        workspace_root = data_root / "workspaces"
+        if workspace_root.exists() and _is_link(workspace_root):
+            raise WorkspaceError("workspace must stay inside the data directory")
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        workspace_root = workspace_root.resolve(strict=True)
+        if not workspace_root.is_relative_to(data_root):
+            raise WorkspaceError("workspace must stay inside the data directory")
+
+        requested = workspace.expanduser()
+        lexical_candidate = requested.absolute()
+        try:
+            lexical_relative = lexical_candidate.relative_to(workspace_root)
+        except ValueError:
+            raise WorkspaceError("workspace must stay inside the data directory") from None
+        current = workspace_root
+        for part in lexical_relative.parts:
+            current /= part
+            if _is_link(current):
+                raise WorkspaceError("workspace must stay inside the data directory")
+
+        candidate = lexical_candidate.resolve(strict=False)
+        if candidate == workspace_root or not candidate.is_relative_to(workspace_root):
+            raise WorkspaceError("workspace must stay inside the data directory")
+
+        candidate.mkdir(parents=True, exist_ok=True)
+        resolved = candidate.resolve(strict=True)
+        if resolved == workspace_root or not resolved.is_relative_to(workspace_root):
+            raise WorkspaceError("workspace must stay inside the data directory")
+        return resolved
+    except WorkspaceError:
+        raise
+    except OSError:
+        raise WorkspaceError("could not create explicit workspace") from None
+
+
 def create_session_workspace(data_dir: Path, session_id: str) -> Path:
     """Create and return the persistent workspace for one UUID session."""
 

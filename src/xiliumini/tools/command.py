@@ -37,6 +37,7 @@ class CommandResult(BaseModel):
     stderr: str = ""
     timed_out: bool = False
     truncated: bool = False
+    requires_approval: bool = False
 
 
 class CommandTool(BaseTool):

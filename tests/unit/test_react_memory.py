@@ -1,8 +1,32 @@
+import json
+
+import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import StructuredTool
 
 from tests.agent_fakes import ScriptedModel, call
 from xiliumini.agents.react import run_react
+
+
+@pytest.mark.parametrize(
+    "flag,expected", [(True, True), (False, False), ("true", False), (1, False), (None, False)]
+)
+def test_canonical_approval_flag(flag, expected):
+    output = {"ok": True}
+    if flag is not None:
+        output["requires_approval"] = flag
+    tool = StructuredTool.from_function(lambda: json.dumps(output), name="bash", description="test")
+    events = []
+    run_react(
+        ScriptedModel([call("bash", {}), "done"]),
+        [tool],
+        [],
+        agent="code_agent",
+        attempt=1,
+        writer=events.append,
+    )
+    result = next(event for event in events if event["type"] == "tool_result")
+    assert result["requires_approval"] is expected
 
 
 def test_before_model_runs_before_every_model_invocation() -> None:

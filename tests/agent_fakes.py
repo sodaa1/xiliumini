@@ -29,6 +29,7 @@ def call(name, args, call_id="call-1"):
 
 def state(workspace, **changes) -> GraphState:
     initial: GraphState = {
+        "resume_node": "planner",
         "supervisor_ok": False,
         "task": "build a Python function and run tests",
         "todos": [],

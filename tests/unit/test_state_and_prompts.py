@@ -7,6 +7,7 @@ import xiliumini.prompts as prompts
 
 def test_graph_state_accepts_complete_initial_contract(tmp_path: Path) -> None:
     state: state_module.GraphState = {
+        "resume_node": "planner",
         "task": "build life",
         "supervisor_ok": False,
         "todos": [],

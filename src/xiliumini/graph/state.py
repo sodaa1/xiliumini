@@ -45,6 +45,7 @@ class AgentResult(TypedDict):
 
 
 class GraphState(TypedDict):
+    resume_node: Literal["planner", "verifier", "final"]
     supervisor_ok: bool
     task: str
     todos: list[TodoItem]

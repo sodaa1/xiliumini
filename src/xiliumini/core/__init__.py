@@ -1,5 +1,18 @@
 """Core primitives shared across the xiliumini runtime."""
 
-from xiliumini.core.agent import stream_agent
+from typing import TYPE_CHECKING, Any
 
-__all__ = ["stream_agent"]
+if TYPE_CHECKING:
+    from xiliumini.core.agent import stream_agent, stream_agent_events
+
+
+def __getattr__(name: str) -> Any:
+    # Tools import core primitives while workflow nodes are still loading.
+    if name in {"stream_agent", "stream_agent_events"}:
+        from xiliumini.core.agent import stream_agent, stream_agent_events
+
+        return {"stream_agent": stream_agent, "stream_agent_events": stream_agent_events}[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = ["stream_agent", "stream_agent_events"]

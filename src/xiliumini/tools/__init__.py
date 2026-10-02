@@ -6,6 +6,7 @@ from typing import Any
 
 from langchain_core.tools import BaseTool
 
+from xiliumini.tools.approval_context import approval_config
 from xiliumini.tools.bash_tool import BashTool
 from xiliumini.tools.calculator import calculator
 from xiliumini.tools.command import CommandTool
@@ -39,12 +40,17 @@ def get_workspace_tools(workspace: Path) -> list[BaseTool]:
 
 def build_tools(state: Mapping[str, Any]) -> list[BaseTool]:
     workspace = state["workspace"]
+    approval = approval_config.get()
     return [
         FileReadTool(workspace=workspace),
         FileWriteTool(workspace=workspace),
         FileEditTool(workspace=workspace),
         GrepTool(workspace=workspace),
-        BashTool(workspace=workspace),
+        BashTool(
+            workspace=workspace,
+            approval_mode=approval.mode,
+            approval_handler=approval.handler,
+        ),
         NotepadReadTool(workspace=workspace),
         NotepadAppendTool(workspace=workspace),
     ]

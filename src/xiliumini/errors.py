@@ -2,6 +2,18 @@ class XiliuminiError(Exception):
     """Base class for safe, user-facing application errors."""
 
 
+class CheckpointError(XiliuminiError):
+    """Raised when checkpoint persistence or recovery fails."""
+
+    code = "checkpoint_error"
+
+
+class TraceError(XiliuminiError):
+    """Raised when execution tracing fails."""
+
+    code = "trace_error"
+
+
 class ConfigError(XiliuminiError):
     """Raised when runtime configuration is invalid."""
 

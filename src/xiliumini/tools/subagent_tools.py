@@ -9,6 +9,7 @@ from langchain_core.tools.base import ArgsSchema
 from pydantic import BaseModel, Field
 
 from xiliumini.agents.code_agent import run_code_agent
+from xiliumini.agents.react import emit
 from xiliumini.agents.search_agent import run_search_agent
 from xiliumini.tools.todo import TodoStore
 
@@ -27,6 +28,7 @@ class SupervisorContext:
             result = runner(self.state, instruction, writer=writer)
         except Exception:
             result = {"ok": False, "summary": "subagent failed", "tool_events": []}
+        self._emit_handoff(agent, bool(result["ok"]), writer)
         summary = {
             "agent": agent,
             "instruction": instruction,
@@ -63,6 +65,20 @@ class SupervisorContext:
             self.state["last_error"] = f"{error_prefix} {result['summary']}"
         self.state["memory"] = self.memory_manager.assemble(self.state, current_node="planner")
         return json.dumps(summary, ensure_ascii=False)
+
+    def _emit_handoff(self, agent: str, ok: bool, writer) -> None:
+        # Arbitrary agent prose can echo credentials, paths or the full instruction.
+        # Keep this audit event structural; the detailed result remains in state.
+        emit(
+            writer,
+            {
+                "type": "handoff",
+                "agent": agent if agent in {"code_agent", "search_agent"} else "unknown",
+                "attempt": self.state["attempt"],
+                "ok": ok,
+                "summary": "Delegation completed" if ok else "Delegation failed",
+            },
+        )
 
 
 class DelegateInput(BaseModel):
