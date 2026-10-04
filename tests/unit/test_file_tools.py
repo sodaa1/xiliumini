@@ -62,6 +62,23 @@ def test_file_write_limits_encoded_utf8_bytes(tmp_path: Path) -> None:
     assert not target.exists()
 
 
+@pytest.mark.parametrize("path", ["TODO.md", "NOTEPAD.md", "HISTORY_SUMMARY.md"])
+def test_file_write_and_edit_reject_runtime_managed_files(tmp_path: Path, path: str) -> None:
+    target = tmp_path / path
+    target.write_text("runtime-owned", encoding="utf-8")
+
+    write_result = FileWriteTool(workspace=tmp_path).invoke(
+        {"path": path, "content": "overwritten"}
+    )
+    edit_result = FileEditTool(workspace=tmp_path).invoke(
+        {"path": path, "old_string": "runtime", "new_string": "agent"}
+    )
+
+    assert write_result == "Error: path is managed by Runtime; use its dedicated tool"
+    assert edit_result == "Error: path is managed by Runtime; use its dedicated tool"
+    assert target.read_text(encoding="utf-8") == "runtime-owned"
+
+
 def test_read_and_write_reject_symlink_escape(tmp_path: Path) -> None:
     outside = tmp_path.parent / "outside-file.txt"
     outside.write_text("secret", encoding="utf-8")

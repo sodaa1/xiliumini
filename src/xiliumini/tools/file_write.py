@@ -10,6 +10,7 @@ from xiliumini.errors import WorkspaceError
 from xiliumini.tools.workspace import (
     MAX_FILE_BYTES,
     atomic_write_utf8,
+    ensure_workspace_file_mutable,
     resolve_workspace_path,
     utf8_size,
 )
@@ -31,6 +32,7 @@ class FileWriteTool(BaseTool):
             if utf8_size(content) > MAX_FILE_BYTES:
                 raise WorkspaceError(f"content exceeds the {MAX_FILE_BYTES}-byte limit")
             target = resolve_workspace_path(self.workspace, path)
+            ensure_workspace_file_mutable(self.workspace, target)
             target.parent.mkdir(parents=True, exist_ok=True)
             target = resolve_workspace_path(self.workspace, path)
             atomic_write_utf8(target, content)

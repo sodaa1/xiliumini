@@ -10,6 +10,7 @@ from xiliumini.errors import WorkspaceError
 from xiliumini.tools.workspace import (
     MAX_FILE_BYTES,
     atomic_write_utf8,
+    ensure_workspace_file_mutable,
     read_utf8_text,
     resolve_workspace_path,
     utf8_size,
@@ -38,6 +39,7 @@ class FileEditTool(BaseTool):
     ) -> str:
         try:
             target = resolve_workspace_path(self.workspace, path)
+            ensure_workspace_file_mutable(self.workspace, target)
             original = read_utf8_text(target, MAX_FILE_BYTES)
             matches = original.count(old_string)
             if matches == 0:

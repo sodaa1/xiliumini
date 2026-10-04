@@ -67,6 +67,9 @@ Rules:
 - Use NotepadAppendTool to record durable findings, decisions, important files,
   blockers, and next-step context that should survive compression.
 - Use NotepadReadTool when you need to recover prior notes.
+- TODO.md, NOTEPAD.md, and HISTORY_SUMMARY.md are Runtime-managed control files.
+  Never modify them with FileWriteTool or FileEditTool; use TodoUpdateTool and
+  NotepadAppendTool instead.
 - BashTool already runs inside the workspace. Use relative paths, never "cd /workspace".
 - Incorporate research notes and source URLs when the task asks for researched content.
 - End with a concise summary of files changed and checks run.

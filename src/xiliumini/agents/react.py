@@ -16,6 +16,14 @@ model_factory: ContextVar[Callable[[], Any] | None] = ContextVar(
     "agent_model_factory", default=None
 )
 
+_SAFE_TOOL_ERRORS = {
+    "missing TAVILY_API_KEY",
+    "invalid TAVILY_API_KEY",
+    "Tavily usage limit exceeded",
+    "Tavily request forbidden",
+    "Tavily rejected search request",
+}
+
 
 def create_agent_model() -> Any:
     factory = model_factory.get()
@@ -46,6 +54,9 @@ def emit(writer, event: dict[str, Any]) -> None:
 def _tool_result_message(agent: str, name: str, ok: bool, data: dict[str, Any]) -> str:
     if ok:
         return f"{agent}: {name} ok"
+    error = data.get("error")
+    if name == "web_search" and error in _SAFE_TOOL_ERRORS:
+        return f"{agent}: {error}"
     if name != "bash":
         return f"{agent}: {name} failed"
     if data.get("timed_out"):
@@ -83,6 +94,8 @@ def run_react(
     completed = False
     try:
         bound = model.bind_tools(tools)
+        stop_reason: str | None = None
+        stop_requested = False
         for _ in range(max_loops):
             if before_model is not None:
                 messages = before_model(messages)
@@ -157,6 +170,16 @@ def run_react(
                         "message": _tool_result_message(agent, name, bool(ok), data),
                     },
                 )
+                if data.get("ok") is False and data.get("retryable") is False:
+                    error = data.get("error")
+                    stop_reason = (
+                        error if isinstance(error, str) and error in _SAFE_TOOL_ERRORS else None
+                    )
+                    stop_requested = True
+                    summary = stop_reason or "Non-retryable tool failure"
+                    break
+            if stop_requested:
+                break
     except MemoryBudgetError:
         raise
     except Exception:

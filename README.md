@@ -42,7 +42,7 @@ XILIUMINI_CHECKPOINT_MODE=light
 XILIUMINI_TRACE_MODE=full
 # Optional: a unique ID for one run; reuse is rejected
 # XILIUMINI_TRACE_ID=my-run
-# Optional: required only for web research
+# Optional: raises Tavily quota; keyless search is used when absent or invalid
 TAVILY_API_KEY=your-tavily-key
 ```
 
@@ -123,15 +123,20 @@ Each session receives an isolated workspace at:
 ```
 
 The Supervisor has `todo_write`, `call_search_agent`, and `call_code_agent` tools.
-searchAgent has only `web_search` (Tavily). Without a key, it returns
-`{"ok": false, "error": "missing TAVILY_API_KEY", "query": "..."}` without a network request.
-Configure the key in the environment or local `.env`; it is not stored in graph state.
+searchAgent has only `web_search` (Tavily). A configured key is preferred; when it is absent
+or rejected, the tool automatically retries once with Tavily's keyless search mode. Permanent
+provider errors are marked non-retryable so the Agent stops instead of exhausting its loop
+budget. Configure a valid key in the environment or local `.env` for higher service limits;
+it is not stored in graph state.
 
 codeAgent uses `file_read`, `file_write`, `file_edit`, `grep`, `bash`, `todo_update`,
 `notepad_read`, and `notepad_append`. Todo progress is persisted in
 `TODO.md` at the session workspace root; durable notes are in `NOTEPAD.md`. A new user
 task resets todo progress but preserves workspace files and notes. Retries preserve the
-current task's progress.
+current task's progress. `TODO.md`, `NOTEPAD.md`, and `HISTORY_SUMMARY.md` are Runtime-managed:
+generic file write/edit tools reject them, and Agents must use their dedicated todo/notepad
+tools. Todo documents produced by older versions with a valid JSON block followed by Markdown
+notes are read once and normalized when the next task starts.
 
 ## Memory system
 

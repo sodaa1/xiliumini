@@ -22,6 +22,28 @@ TODO_PATH = "TODO.md"
 LEGACY_TODO_PATH = ".xiliumini/todos.json"
 
 
+def _decode_todo_document(text: str) -> dict:
+    try:
+        return decode_markdown_json("TODO", text)
+    except ValueError:
+        prefix = "# TODO\n\n```json\n"
+        fence = "\n```\n"
+        if not text.startswith(prefix):
+            raise
+        fence_index = text.find(fence, len(prefix))
+        if fence_index < 0:
+            raise
+        trailing = text[fence_index + len(fence) :].lstrip()
+        if trailing.startswith("---\n"):
+            trailing = trailing[4:].lstrip()
+        if not trailing.startswith("#"):
+            raise
+        document = json.loads(text[len(prefix) : fence_index])
+        if not isinstance(document, dict):
+            raise ValueError("invalid TODO document") from None
+        return document
+
+
 class TodoDraftInput(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     content: str = Field(min_length=1, max_length=2_000)
@@ -65,7 +87,7 @@ class TodoStore:
         try:
             legacy = resolve_workspace_path(self.workspace, LEGACY_TODO_PATH)
             if target.exists():
-                document = decode_markdown_json("TODO", read_utf8_text(target, MAX_FILE_BYTES))
+                document = _decode_todo_document(read_utf8_text(target, MAX_FILE_BYTES))
                 if document.get("schema_version") != 1:
                     raise ValueError
                 raw = document.get("todos")

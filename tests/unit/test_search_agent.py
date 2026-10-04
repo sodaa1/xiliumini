@@ -51,7 +51,8 @@ def test_search_collects_sources_and_returns_tool_messages(monkeypatch, tmp_path
 def test_search_loop_limit_retains_evidence(monkeypatch, tmp_path):
     module, _ = install(monkeypatch, [call("web_search", {"query": "docs"})])
     result = module.run_search_agent(state(tmp_path), "research", max_loops=1)
-    assert result["ok"] is False
+    assert result["ok"] is True
+    assert result["summary"] == "official answer"
     assert result["sources"] == ["https://example.test/docs"]
     assert result["tool_events"]
 
@@ -72,3 +73,36 @@ def test_search_provider_error_is_redacted(monkeypatch, tmp_path):
     result = module.run_search_agent(state(tmp_path), "research")
     assert not result["ok"]
     assert "private-secret" not in result["summary"]
+
+
+def test_non_retryable_search_error_stops_without_reaching_loop_limit(monkeypatch, tmp_path):
+    module = importlib.import_module("xiliumini.agents.search_agent")
+    model = ScriptedModel(
+        [
+            call("web_search", {"query": "docs"}),
+            call("web_search", {"query": "docs again"}),
+        ]
+    )
+
+    @tool("web_search")
+    def invalid_key_search(query: str) -> str:
+        """Return a controlled permanent provider failure."""
+        return json.dumps(
+            {
+                "ok": False,
+                "query": query,
+                "error": "invalid TAVILY_API_KEY",
+                "retryable": False,
+            }
+        )
+
+    monkeypatch.setattr(module, "create_agent_model", lambda: model)
+    monkeypatch.setattr(module, "WebSearchTool", lambda: invalid_key_search)
+
+    events = []
+    result = module.run_search_agent(state(tmp_path), "research", writer=events.append)
+
+    assert result["ok"] is False
+    assert result["summary"] == "invalid TAVILY_API_KEY"
+    assert len(model.calls) == 1
+    assert events[-1]["message"] == "search_agent: invalid TAVILY_API_KEY"

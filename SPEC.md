@@ -259,8 +259,9 @@ Planner。Planner 通过 `TodoWriteTool`、`CallSearchAgentTool`、`CallCodeAgen
 不直接操作代码。旧 Actor 不再注册。
 
 - `run_search_agent(state, instruction, *, writer=None, max_loops=4)`：仅绑定 Tavily
-  `WebSearchTool`，返回摘要、queries、sources、messages、tool_events；没有
-  `TAVILY_API_KEY` 时返回明确工具错误。环境变量和 `.env` 均支持。
+  `WebSearchTool`，返回摘要、queries、sources、messages、tool_events；优先使用环境变量或
+  `.env` 中的 `TAVILY_API_KEY`，缺失或被服务拒绝时自动降级到 Tavily keyless 搜索。
+  不可重试错误立即结束工具循环；达到 loop limit 但已收集有效来源时生成确定性摘要。
 - `run_code_agent(state, instruction, *, writer=None, max_loops=10)`：绑定工作区文件工具、
   argv 形式的受限 Bash、TodoUpdate、Notepad；显式维护 todo 状态。Bash 不是操作系统沙箱。
 - 受限 Bash 支持工作区相对 `cwd`，并将拒绝、超时、输出截断和非零退出码分别映射为
@@ -290,7 +291,9 @@ Runtime 是 Memory 的唯一组装者，并为每个 stream/session 创建独立
 
 session workspace 的 canonical 文件为 `TODO.md`、`NOTEPAD.md`、
 `HISTORY_SUMMARY.md`。合法旧 `.xiliumini/todos.json` 与 `.xiliumini/notepad.md` 仅在
-canonical 文件不存在时迁移，旧文件保留；损坏输入不覆盖。
+canonical 文件不存在时迁移，旧文件保留；损坏输入不覆盖。普通 FileWrite/FileEdit 不得修改
+这三个 Runtime 管理文件；旧版本写出的“合法 TODO JSON + 尾随 Markdown 说明”可读取，并在
+下一任务初始化时恢复为规范文档。
 
 Planner 每次模型调用前用 tiktoken 估算 role/content/tool calls。默认在 64,000 token
 窗口的 80% 触发压缩，保留最新 8,000 token；固定规则、完整当前任务和最近消息不由初次

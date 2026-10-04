@@ -55,5 +55,10 @@ def run_search_agent(state, instruction, *, writer=None, max_loops=4) -> dict:
                 if url and url not in sources:
                     sources.append(url)
     result.update(queries=queries, sources=sources, answers=answers)
-    result["ok"] = result["ok"] and bool(sources)
+    if result["summary"] == "Agent loop limit reached" and sources:
+        fallback = "\n\n".join(answer.strip() for answer in answers if answer.strip())
+        result["summary"] = fallback[:8_000] or f"Research collected {len(sources)} source(s)."
+        result["ok"] = True
+    else:
+        result["ok"] = result["ok"] and bool(sources)
     return result

@@ -4,7 +4,7 @@ import pytest
 from langchain_core.messages import ToolMessage
 
 from tests.agent_fakes import ScriptedModel, call, state
-from xiliumini.errors import MemoryBudgetError, MemorySystemError, WorkspaceError
+from xiliumini.errors import MemoryBudgetError, MemorySystemError
 from xiliumini.graph.memory import MemoryLimits, MemoryManager
 from xiliumini.graph.nodes import (
     chat_responder_node,
@@ -599,7 +599,7 @@ def test_handoff_precedes_failed_memory_assembly(monkeypatch, tmp_path, error_ty
     }
 
 
-def test_real_code_runner_corrupt_todo_still_emits_handoff(monkeypatch, tmp_path):
+def test_real_code_runner_rejects_todo_corruption_and_emits_failed_handoff(monkeypatch, tmp_path):
     import xiliumini.agents.code_agent as code
 
     TodoStore(tmp_path).write([{"id": "impl", "content": "implement"}])
@@ -612,8 +612,12 @@ def test_real_code_runner_corrupt_todo_still_emits_handoff(monkeypatch, tmp_path
     monkeypatch.setattr(code, "create_agent_model", lambda: model)
     events = []
     context = SupervisorContext(state(tmp_path), memory_manager(tmp_path))
-    with pytest.raises(WorkspaceError, match="todo data is invalid"):
-        context.delegate("code_agent", "private instruction", events.append)
+    result = json.loads(context.delegate("code_agent", "private instruction", events.append))
+
+    assert result["ok"] is False
+    assert TodoStore(tmp_path).read() == [
+        {"id": "impl", "content": "implement", "status": "pending", "note": ""}
+    ]
     assert len(model.calls) == 2
     assert [event["type"] for event in events] == ["tool_call", "tool_result", "handoff"]
     assert events[-1] == {

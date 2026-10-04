@@ -153,6 +153,41 @@ def test_corrupt_canonical_todo_is_not_overwritten_or_replaced_by_legacy(
     assert canonical.read_text(encoding="utf-8") == original
 
 
+def test_todo_store_recovers_structured_data_with_trailing_legacy_notes(
+    tmp_path: Path,
+) -> None:
+    store = todo_api().TodoStore(tmp_path)
+    expected = store.write(drafts(("impl", "implement")))
+    canonical = tmp_path / "TODO.md"
+    canonical.write_text(
+        canonical.read_text(encoding="utf-8")
+        + "\n## Legacy agent notes\n\nThis text was appended by an older code agent.\n",
+        encoding="utf-8",
+    )
+
+    assert store.read() == expected
+
+    store.start_task()
+
+    assert store.read() == []
+    assert "Legacy agent notes" not in canonical.read_text(encoding="utf-8")
+
+
+def test_todo_store_recovers_trailing_legacy_notes_after_markdown_separator(
+    tmp_path: Path,
+) -> None:
+    store = todo_api().TodoStore(tmp_path)
+    expected = store.write(drafts(("impl", "implement")))
+    canonical = tmp_path / "TODO.md"
+    canonical.write_text(
+        canonical.read_text(encoding="utf-8")
+        + "\n---\n\n## Legacy agent notes\n\nOlder agents used a separator.\n",
+        encoding="utf-8",
+    )
+
+    assert store.read() == expected
+
+
 def test_completed_todo_can_be_reopened_for_verifier_feedback(tmp_path):
     store = todo_api().TodoStore(tmp_path)
     store.write(drafts(("impl", "implement")))

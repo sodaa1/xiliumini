@@ -8,6 +8,7 @@ from uuid import UUID
 from xiliumini.errors import WorkspaceError
 
 MAX_FILE_BYTES = 1_000_000
+RUNTIME_MANAGED_WORKSPACE_FILES = frozenset({"todo.md", "notepad.md", "history_summary.md"})
 
 
 def _is_link(path: Path) -> bool:
@@ -114,6 +115,14 @@ def resolve_workspace_path(
     if candidate == root and not allow_root:
         raise WorkspaceError("path must name an item inside the workspace")
     return candidate
+
+
+def ensure_workspace_file_mutable(workspace: Path, target: Path) -> None:
+    """Reject generic writes to top-level files owned by Runtime stores."""
+
+    root = workspace.resolve(strict=True)
+    if target.parent == root and target.name.casefold() in RUNTIME_MANAGED_WORKSPACE_FILES:
+        raise WorkspaceError("path is managed by Runtime; use its dedicated tool")
 
 
 def read_utf8_text(path: Path, max_bytes: int) -> str:
