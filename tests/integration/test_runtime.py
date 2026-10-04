@@ -8,7 +8,7 @@ import xiliumini.runtime as runtime_module
 from tests.agent_fakes import state as complete_state
 from xiliumini.core.approval import ApprovalDecision
 from xiliumini.errors import NodeOutputError
-from xiliumini.events import ErrorEvent, FinalEvent, PlannerEvent
+from xiliumini.events import ErrorEvent, FinalEvent, PlannerEvent, ProgressEvent
 from xiliumini.graph.memory import MemoryLimits
 from xiliumini.graph.state import GraphState
 from xiliumini.runtime import Runtime
@@ -281,6 +281,99 @@ def test_runtime_reports_invalid_session_without_traceback(tmp_path: Path) -> No
     assert list(runtime.stream("question", "../escape")) == [
         ErrorEvent(code="workspace_error", message="session_id must be a valid UUID")
     ]
+
+
+def test_stream_session_chat_uses_context_without_starting_full_workflow(
+    monkeypatch, tmp_path: Path
+) -> None:
+    observed = []
+
+    class EntryWorkflow:
+        def invoke(self, inputs, **kwargs):
+            observed.append(inputs.copy())
+            return {
+                **inputs,
+                "intent_route": "chat",
+                "intent_reason": "greeting",
+                "intent_confidence": 0.95,
+                "chat_response": "你好！",
+                "final_answer": "你好！",
+            }
+
+    monkeypatch.setattr(
+        runtime_module, "build_entry_workflow", lambda model: EntryWorkflow(), raising=False
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "stream_agent",
+        lambda *args, **kwargs: pytest.fail("full workflow must not start for chat"),
+    )
+    monkeypatch.setattr(
+        runtime_module.TodoStore,
+        "start_task",
+        lambda self: pytest.fail("chat must not reset Todo state"),
+    )
+
+    events = list(
+        Runtime(object(), data_dir=tmp_path).stream_session(
+            "你好", SESSION_ID, "prior conversation", max_attempts=4
+        )
+    )
+
+    assert events == [FinalEvent(text="你好！", session_id=SESSION_ID)]
+    assert observed[0]["context_summary"] == "prior conversation"
+    assert observed[0]["task"] == "你好"
+    assert observed[0]["max_attempts"] == 4
+    assert observed[0]["workspace"] == (tmp_path / "workspaces" / SESSION_ID).resolve()
+
+
+def test_stream_session_workflow_handoff_preserves_route_and_uses_harness(
+    monkeypatch, tmp_path: Path
+) -> None:
+    captured = []
+    started = []
+
+    class EntryWorkflow:
+        def invoke(self, inputs, **kwargs):
+            return {
+                **inputs,
+                "intent_route": "workflow",
+                "intent_reason": "needs workspace files",
+                "intent_confidence": 0.98,
+            }
+
+    def capture(model, inputs, **kwargs):
+        captured.append((inputs.copy(), kwargs))
+        yield FinalEvent(text="workflow complete", session_id=inputs["session_id"])
+
+    original_start = runtime_module.TodoStore.start_task
+
+    def record_start(store):
+        started.append(store.workspace)
+        return original_start(store)
+
+    monkeypatch.setattr(runtime_module, "build_entry_workflow", lambda model: EntryWorkflow())
+    monkeypatch.setattr(runtime_module, "stream_agent", capture)
+    monkeypatch.setattr(runtime_module.TodoStore, "start_task", record_start)
+
+    events = list(
+        Runtime(object(), data_dir=tmp_path).stream_session(
+            "inspect files", SESSION_ID, "earlier turn summary"
+        )
+    )
+
+    workspace = (tmp_path / "workspaces" / SESSION_ID).resolve()
+    assert events == [FinalEvent(text="workflow complete", session_id=SESSION_ID)]
+    assert started == [workspace]
+    assert len(captured) == 1
+    routed, kwargs = captured[0]
+    assert routed["intent_route"] == "workflow"
+    assert routed["intent_reason"] == "needs workspace files"
+    assert routed["intent_confidence"] == 0.98
+    assert routed["context_summary"] == "earlier turn summary"
+    assert kwargs["memory_manager"] is not None
+    assert kwargs["checkpoint_manager"] is not None
+    assert kwargs["trace_recorder"] is not None
 
 
 def test_runtime_redacts_workspace_creation_failure(tmp_path: Path) -> None:
@@ -696,7 +789,11 @@ def test_real_resume_interleave_close_and_complete(monkeypatch, tmp_path):
     next(first)
     next(second)
     first.close()
-    assert list(second) == [FinalEvent(text=SECOND_SESSION_ID, session_id=SECOND_SESSION_ID)]
+    remaining = list(second)
+    assert remaining[0] == FinalEvent(text=SECOND_SESSION_ID, session_id=SECOND_SESSION_ID)
+    assert isinstance(remaining[1], ProgressEvent)
+    assert remaining[1].event_type == "checkpoint_saved"
+    assert remaining[1].details["latest_node"] == "final"
     traces = []
     for workspace, status, latest in zip(
         workspaces, ["interrupted", "completed"], [None, "final"], strict=True

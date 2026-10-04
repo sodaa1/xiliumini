@@ -20,6 +20,221 @@ from xiliumini.graph.state import GraphState
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
 
 
+def test_stream_session_events_persists_chat_turns_and_is_public(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import xiliumini.config as config_module
+    import xiliumini.runtime as runtime_module
+    from xiliumini.core.session import load_or_create_session
+
+    observed = []
+
+    class FakeRuntime:
+        def stream_session(self, task, session_id, context_summary, max_attempts=3):
+            current = load_or_create_session((tmp_path / ".xiliumini").resolve())
+            observed.append((task, session_id, context_summary, max_attempts, current.copy()))
+            yield FinalEvent(text="你好！", session_id=session_id)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(config_module, "load_settings", lambda: object())
+
+    def create(settings, **overrides):
+        assert overrides == {
+            "approval_mode": "inline",
+            "approval_handler": None,
+            "checkpoint_mode": "light",
+            "trace_mode": "full",
+            "data_dir": (tmp_path / ".xiliumini").resolve(),
+        }
+        return FakeRuntime()
+
+    monkeypatch.setattr(runtime_module, "create_runtime", create)
+
+    events = list(agent_module.stream_session_events("你好"))
+
+    assert events == [
+        {
+            "type": "graph_event",
+            "event": {"text": "你好！", "session_id": observed[0][1]},
+        }
+    ]
+    task, session_id, context, maximum, before_answer = observed[0]
+    assert task == "你好"
+    assert maximum == 3
+    assert before_answer["turn_index"] == 1
+    assert before_answer["recent_turns"][0]["role"] == "user"
+    assert f"Session ID: {session_id}" in context
+    assert "Turn 1 user: 你好" in context
+
+    saved = load_or_create_session((tmp_path / ".xiliumini").resolve())
+    assert saved["turn_index"] == 2
+    assert saved["recent_turns"][1] == {
+        "turn": 2,
+        "role": "assistant",
+        "route": "chat",
+        "content": "你好！",
+        "summary": "",
+    }
+
+    from xiliumini.core import stream_session_events
+
+    assert stream_session_events is agent_module.stream_session_events
+
+
+def test_stream_session_events_forwards_workflow_and_saves_summary(monkeypatch, tmp_path):
+    import xiliumini.config as config_module
+    import xiliumini.runtime as runtime_module
+    from xiliumini.core.session import load_or_create_session
+
+    workspace = tmp_path / ".xiliumini"
+
+    class FakeRuntime:
+        def stream_session(self, task, session_id, context_summary, max_attempts=3):
+            yield ProgressEvent(stage="code_agent", message="working")
+            yield PlannerEvent(todos=[], summary="implemented", attempt=1)
+            yield VerifierEvent(passed=True, reason="checks passed", attempt=1)
+            yield FinalEvent(text="workflow complete", session_id=session_id)
+
+    monkeypatch.setattr(config_module, "load_settings", lambda: object())
+    monkeypatch.setattr(runtime_module, "create_runtime", lambda *args, **kwargs: FakeRuntime())
+
+    events = list(agent_module.stream_session_events("build it", session_workspace=workspace))
+
+    assert [event["type"] for event in events] == [
+        "custom_event",
+        "graph_event",
+        "graph_event",
+        "graph_event",
+    ]
+    assert events[-1]["event"]["text"] == "workflow complete"
+    saved = load_or_create_session(workspace.resolve())
+    assistant = saved["recent_turns"][-1]
+    assert assistant["route"] == "workflow"
+    assert assistant["content"] == "workflow complete"
+    assert "implemented" in assistant["summary"]
+    assert "checks passed" in assistant["summary"]
+
+
+def test_workflow_summary_keeps_latest_planner_and_final_verifier(monkeypatch, tmp_path):
+    import xiliumini.config as config_module
+    import xiliumini.runtime as runtime_module
+    from xiliumini.core.session import MAX_TURN_CONTENT, load_or_create_session
+
+    workspace = tmp_path / ".xiliumini"
+
+    class FakeRuntime:
+        def stream_session(self, task, session_id, context_summary, max_attempts=3):
+            yield PlannerEvent(todos=[], summary="obsolete failure", attempt=1)
+            yield VerifierEvent(passed=False, reason="retry needed", attempt=1)
+            yield PlannerEvent(todos=[], summary="P" * MAX_TURN_CONTENT, attempt=2)
+            yield VerifierEvent(passed=True, reason="FINAL VERIFIED", attempt=2)
+            yield FinalEvent(text="done", session_id=session_id)
+
+    monkeypatch.setattr(config_module, "load_settings", lambda: object())
+    monkeypatch.setattr(runtime_module, "create_runtime", lambda *args, **kwargs: FakeRuntime())
+
+    list(agent_module.stream_session_events("build it", session_workspace=workspace))
+
+    summary = load_or_create_session(workspace.resolve())["recent_turns"][-1]["summary"]
+    assert len(summary) <= MAX_TURN_CONTENT
+    assert "FINAL VERIFIED" in summary
+    assert "obsolete failure" not in summary
+    assert "retry needed" not in summary
+
+
+def test_stream_session_events_second_turn_receives_prior_conversation(monkeypatch, tmp_path):
+    import xiliumini.config as config_module
+    import xiliumini.runtime as runtime_module
+
+    contexts = []
+    workspace = tmp_path / ".xiliumini"
+
+    class FakeRuntime:
+        def stream_session(self, task, session_id, context_summary, max_attempts=3):
+            contexts.append(context_summary)
+            yield FinalEvent(text=f"answer to {task}", session_id=session_id)
+
+    monkeypatch.setattr(config_module, "load_settings", lambda: object())
+    monkeypatch.setattr(runtime_module, "create_runtime", lambda *args, **kwargs: FakeRuntime())
+
+    list(agent_module.stream_session_events("first question", session_workspace=workspace))
+    list(agent_module.stream_session_events("second question", session_workspace=workspace))
+
+    assert "Turn 1 user: first question" in contexts[0]
+    assert "Turn 2 assistant [chat]: answer to first question" in contexts[1]
+    assert "Turn 3 user: second question" in contexts[1]
+
+
+def test_stream_session_events_error_preserves_only_saved_user_turn(monkeypatch, tmp_path):
+    import xiliumini.config as config_module
+    import xiliumini.runtime as runtime_module
+    from xiliumini.core.session import load_or_create_session
+
+    workspace = tmp_path / ".xiliumini"
+
+    class FakeRuntime:
+        def stream_session(self, task, session_id, context_summary, max_attempts=3):
+            yield ErrorEvent(code="provider_error", message="Provider request failed")
+
+    monkeypatch.setattr(config_module, "load_settings", lambda: object())
+    monkeypatch.setattr(runtime_module, "create_runtime", lambda *args, **kwargs: FakeRuntime())
+
+    events = list(agent_module.stream_session_events("keep me", session_workspace=workspace))
+
+    assert events == [
+        {
+            "type": "graph_event",
+            "event": {"code": "provider_error", "message": "Provider request failed"},
+        }
+    ]
+    saved = load_or_create_session(workspace.resolve())
+    assert saved["turn_index"] == 1
+    assert [turn["role"] for turn in saved["recent_turns"]] == ["user"]
+
+
+def test_stream_session_events_close_closes_runtime_without_assistant_turn(monkeypatch, tmp_path):
+    import xiliumini.config as config_module
+    import xiliumini.runtime as runtime_module
+    from xiliumini.core.session import load_or_create_session
+
+    workspace = tmp_path / ".xiliumini"
+    closed = []
+
+    class ClosableEvents:
+        def __init__(self):
+            self.remaining = iter(
+                [
+                    ProgressEvent(stage="planner", message="working"),
+                    FinalEvent(text="too late", session_id=SESSION_ID),
+                ]
+            )
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.remaining)
+
+        def close(self):
+            closed.append(True)
+
+    class FakeRuntime:
+        def stream_session(self, task, session_id, context_summary, max_attempts=3):
+            return ClosableEvents()
+
+    monkeypatch.setattr(config_module, "load_settings", lambda: object())
+    monkeypatch.setattr(runtime_module, "create_runtime", lambda *args, **kwargs: FakeRuntime())
+
+    events = agent_module.stream_session_events("unfinished", session_workspace=workspace)
+    assert next(events)["type"] == "custom_event"
+    events.close()
+
+    assert closed == [True]
+    saved = load_or_create_session(workspace.resolve())
+    assert saved["turn_index"] == 1
+    assert [turn["role"] for turn in saved["recent_turns"]] == ["user"]
+
+
 def test_stream_agent_events_builds_overridden_runtime_and_adapts_events(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -66,7 +281,12 @@ def test_stream_agent_events_builds_overridden_runtime_and_adapts_events(
     assert events == [
         {
             "type": "custom_event",
-            "event": {"stage": "planner", "message": "working"},
+            "event": {
+                "stage": "planner",
+                "message": "working",
+                "event_type": "progress",
+                "details": {},
+            },
         },
         {
             "type": "graph_event",
@@ -287,10 +507,79 @@ def test_stream_agent_maps_updates_and_custom_events(monkeypatch, tmp_path: Path
 
     assert events == [
         PlannerEvent(todos=[], summary="implemented", attempt=1),
-        ProgressEvent(stage="actor", message="Starting: tests"),
+        ProgressEvent(
+            stage="actor",
+            message="Starting: tests",
+            details={"stage": "actor", "message": "Starting: tests"},
+        ),
         VerifierEvent(passed=False, reason="green missing", attempt=1),
         FinalEvent(text="failed after 1", session_id=SESSION_ID),
     ]
+
+
+def test_chunk_events_preserves_structured_progress_payload_independently() -> None:
+    payload = {
+        "type": "tool_call",
+        "stage": "code_agent",
+        "message": "code_agent: file_write",
+        "tool": "file_write",
+        "args": {"path": "app.py"},
+    }
+
+    events = list(agent_module._chunk_events(("custom", payload), SESSION_ID))
+    payload["args"]["path"] = "changed.py"
+
+    assert events == [
+        ProgressEvent(
+            stage="code_agent",
+            message="code_agent: file_write",
+            event_type="tool_call",
+            details={
+                "type": "tool_call",
+                "stage": "code_agent",
+                "message": "code_agent: file_write",
+                "tool": "file_write",
+                "args": {"path": "app.py"},
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize("event_type", [None, 7, False])
+def test_chunk_events_malformed_custom_type_falls_back_to_progress(event_type) -> None:
+    payload = {"stage": "planner", "message": "working", "type": event_type}
+
+    event = next(agent_module._chunk_events(("custom", payload), SESSION_ID))
+
+    assert isinstance(event, ProgressEvent)
+    assert event.event_type == "progress"
+    assert event.details == payload
+
+
+def test_progress_event_compatibility_defaults_structured_fields() -> None:
+    event = ProgressEvent(stage="planner", message="working")
+
+    assert event.event_type == "progress"
+    assert event.details == {}
+
+
+def test_chunk_events_synthesizes_display_fields_for_handoff() -> None:
+    payload = {
+        "type": "handoff",
+        "agent": "code_agent",
+        "attempt": 1,
+        "ok": True,
+        "summary": "Delegation completed",
+    }
+
+    event = next(agent_module._chunk_events(("custom", payload), SESSION_ID))
+
+    assert event == ProgressEvent(
+        stage="planner",
+        message="planner → code_agent: Delegation completed",
+        event_type="handoff",
+        details=payload,
+    )
 
 
 def test_stream_agent_ignores_unknown_and_incomplete_chunks(monkeypatch, tmp_path: Path) -> None:
@@ -341,7 +630,11 @@ class Harness:
 
     def save(self, state, **kwargs):
         self.calls.append(("save", deepcopy(state), deepcopy(kwargs)))
-        return {"type": "checkpoint_saved"}
+        return {
+            "type": "checkpoint_saved",
+            "status": kwargs["status"],
+            "latest_node": kwargs["latest_node"],
+        }
 
     def end(self, **kwargs):
         self.calls.append(("end", deepcopy(kwargs)))
@@ -367,8 +660,17 @@ def test_harness_normal_order_and_state(monkeypatch, tmp_path, mode, saves):
             resume_event={"type": "resume"},
         )
     )
-    assert events == [
-        ProgressEvent(stage="code", message="working"),
+    assert [
+        event
+        for event in events
+        if not isinstance(event, ProgressEvent) or event.event_type != "checkpoint_saved"
+    ] == [
+        ProgressEvent(
+            stage="code",
+            message="working",
+            event_type="tool_call",
+            details=custom,
+        ),
         PlannerEvent(todos=[], summary="done", attempt=1),
     ]
     assert calls[0] == ("start", {"resumed": True, "resume_event": {"type": "resume"}})
@@ -379,10 +681,66 @@ def test_harness_normal_order_and_state(monkeypatch, tmp_path, mode, saves):
         assert saved[0][2] == {"status": "started", "latest_node": None, "event": None}
         assert saved[-1][1]["attempt"] == 1
         assert saved[-1][2]["status"] == "completed"
-        assert calls[-2] == ("custom", {"type": "checkpoint_saved"})
+        assert calls[-2] == (
+            "custom",
+            {
+                "type": "checkpoint_saved",
+                "status": "completed",
+                "latest_node": "planner",
+            },
+        )
     assert calls[-1][0] == "end"
     assert calls[-1][1]["status"] == "completed"
     assert state["attempt"] == 0
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_statuses"),
+    [
+        ("light", ["running"]),
+        ("strict", ["running", "running"]),
+    ],
+)
+def test_checkpoint_events_are_streamed_once_per_successful_save(
+    monkeypatch, tmp_path, mode, expected_statuses
+):
+    calls = []
+    harness = Harness(calls, mode)
+    workflow = FakeWorkflow(
+        [
+            ("custom", {"type": "tool_call", "stage": "code", "message": "working"}),
+            ("updates", {"planner": {"todos": [], "result": "done", "attempt": 1}}),
+        ]
+    )
+    monkeypatch.setattr(agent_module, "build_workflow", lambda *args, **kwargs: workflow)
+
+    events = list(
+        agent_module.stream_agent(
+            object(),
+            inputs(tmp_path),
+            memory_manager=object(),
+            checkpoint_manager=harness,
+            trace_recorder=harness,
+        )
+    )
+
+    checkpoint_events = [
+        event
+        for event in events
+        if isinstance(event, ProgressEvent) and event.event_type == "checkpoint_saved"
+    ]
+    assert [event.details["status"] for event in checkpoint_events] == expected_statuses
+    assert checkpoint_events[-1].details["latest_node"] == "planner"
+    trace_checkpoints = [
+        call[1]
+        for call in calls
+        if call[0] == "custom" and call[1].get("type") == "checkpoint_saved"
+    ]
+    assert [event["status"] for event in trace_checkpoints] == [
+        "started",
+        *expected_statuses,
+        "completed",
+    ]
 
 
 def test_harness_mutating_observers_cannot_change_state(monkeypatch, tmp_path):

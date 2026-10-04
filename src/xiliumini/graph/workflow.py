@@ -5,7 +5,14 @@ from typing import Any, Literal
 
 from langgraph.graph import END, START, StateGraph
 
-from xiliumini.graph.nodes import final_node, planner_node, verifier_node
+from xiliumini.graph.nodes import (
+    chat_responder_node,
+    final_node,
+    intent_route_fn,
+    intent_router_node,
+    planner_node,
+    verifier_node,
+)
 from xiliumini.graph.state import GraphState
 
 
@@ -24,6 +31,21 @@ def route_after_verifier(state: GraphState) -> Literal["planner", "final"]:
     return "planner"
 
 
+def build_entry_workflow(model: Any):
+    """Build the intent-routing graph that precedes the main workflow."""
+    graph = StateGraph(GraphState)
+    graph.add_node("intent_router", partial(intent_router_node, model=model))
+    graph.add_node("chat_responder", partial(chat_responder_node, model=model))
+    graph.add_edge(START, "intent_router")
+    graph.add_conditional_edges(
+        "intent_router",
+        intent_route_fn,
+        {"chat_responder": "chat_responder", "planner": END},
+    )
+    graph.add_edge("chat_responder", END)
+    return graph.compile()
+
+
 def build_workflow(model: Any, memory_manager: Any, checkpointer: Any | None = None):
     graph = StateGraph(GraphState)
     graph.add_node("planner", partial(planner_node, model=model, memory_manager=memory_manager))
@@ -38,3 +60,6 @@ def build_workflow(model: Any, memory_manager: Any, checkpointer: Any | None = N
     )
     graph.add_edge("final", END)
     return graph.compile(checkpointer=checkpointer)
+
+
+build_complex_workflow = build_workflow

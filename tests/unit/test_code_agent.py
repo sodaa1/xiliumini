@@ -33,6 +33,10 @@ def test_code_writes_runs_checks_and_persists_todos(monkeypatch, tmp_path):
     assert result["todos"][0]["status"] == "completed"
     assert json.loads(result["tool_events"][2]["output"])["exit_code"] == 0
     assert {"todo_update", "tool_call", "tool_result"} <= {e["type"] for e in events}
+    file_write_call = next(
+        event for event in events if event["type"] == "tool_call" and event["tool"] == "file_write"
+    )
+    assert file_write_call["args"]["path"] == "demo.py"
     assert "implement a demo" in model.calls[0][1].content
 
 

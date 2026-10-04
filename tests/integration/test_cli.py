@@ -405,36 +405,99 @@ def test_ask_no_stream_hides_intermediate_events(monkeypatch, tmp_path: Path) ->
     assert result.stdout == "📝 Final: complete\n"
 
 
-def test_chat_uses_default_attempts_and_reuses_session(monkeypatch, tmp_path: Path) -> None:
-    runtime = FakeRuntime([FinalEvent(text="done", session_id="session")])
-    install_runtime(monkeypatch, tmp_path, runtime)
+def test_bare_command_loads_config_then_starts_tui(monkeypatch, tmp_path: Path) -> None:
+    import xiliumini.cli.tui as tui_module
 
-    result = runner.invoke(app, input="hello\nfollow up\n/exit\n")
+    calls: list[tuple[str, object]] = []
+    session_root = tmp_path / "configured-data"
+    settings = Settings.from_env(
+        {
+            "XILIUMINI_API_KEY": "secret",
+            "XILIUMINI_MODEL": "fake-model",
+            "XILIUMINI_DATA_DIR": str(session_root),
+            "XILIUMINI_CHECKPOINT_MODE": "off",
+            "XILIUMINI_TRACE_MODE": "summary",
+        }
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "load_settings",
+        lambda: calls.append(("settings", tmp_path)) or settings,
+    )
+    monkeypatch.setattr(
+        tui_module,
+        "run_tui",
+        lambda **kwargs: calls.append(("tui", kwargs)),
+    )
+
+    result = runner.invoke(app)
 
     assert result.exit_code == 0
-    assert [call[0] for call in runtime.calls] == ["hello", "follow up"]
-    assert runtime.calls[0][1] == runtime.calls[1][1]
-    assert [call[2] for call in runtime.calls] == [3, 3]
+    assert calls == [
+        ("settings", tmp_path),
+        (
+            "tui",
+            {
+                "session_workspace": session_root,
+                "max_attempts": 3,
+                "approval_mode": "inline",
+                "checkpoint_mode": "off",
+                "trace_mode": "summary",
+            },
+        ),
+    ]
 
 
-def test_chat_uses_root_max_attempts(monkeypatch, tmp_path: Path) -> None:
-    runtime = FakeRuntime([FinalEvent(text="done", session_id="session")])
-    install_runtime(monkeypatch, tmp_path, runtime)
+def test_chat_alias_passes_root_options_to_tui(monkeypatch, tmp_path: Path) -> None:
+    import xiliumini.cli.tui as tui_module
 
-    result = runner.invoke(app, ["--max-attempts", "6"], input="hello\n/exit\n")
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(cli_module, "load_settings", lambda: configured_settings(tmp_path))
+    monkeypatch.setattr(tui_module, "run_tui", lambda **kwargs: calls.append(kwargs))
+    workspace = tmp_path / "session-root"
+
+    result = runner.invoke(
+        app,
+        [
+            "--workspace",
+            str(workspace),
+            "--max-attempts",
+            "6",
+            "--approval-mode",
+            "deny",
+            "--checkpoint-mode",
+            "off",
+            "--trace-mode",
+            "off",
+            "chat",
+        ],
+    )
 
     assert result.exit_code == 0
-    assert [call[2] for call in runtime.calls] == [6]
+    assert calls == [
+        {
+            "session_workspace": workspace,
+            "max_attempts": 6,
+            "approval_mode": "deny",
+            "checkpoint_mode": "off",
+            "trace_mode": "off",
+        }
+    ]
 
 
-def test_interactive_new_changes_session(monkeypatch, tmp_path: Path) -> None:
-    runtime = FakeRuntime([FinalEvent(text="done", session_id="session")])
-    install_runtime(monkeypatch, tmp_path, runtime)
+def test_chat_session_is_rejected_before_tui_launch(monkeypatch) -> None:
+    import xiliumini.cli.tui as tui_module
 
-    result = runner.invoke(app, input="first\n/new\nsecond\n/exit\n")
+    monkeypatch.setattr(
+        tui_module,
+        "run_tui",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not start TUI")),
+    )
 
-    assert result.exit_code == 0
-    assert runtime.calls[0][1] != runtime.calls[1][1]
+    result = runner.invoke(app, ["chat", "--session", "saved"])
+
+    assert result.exit_code == 1
+    assert "not supported" in result.stdout
 
 
 def test_ask_runtime_error_exits_one_without_traceback(monkeypatch, tmp_path: Path) -> None:

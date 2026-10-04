@@ -4,7 +4,7 @@
 
 - Python 3.12+
 - uv
-- Typer + Rich
+- Typer + Rich + Textual 8.x
 - LangGraph + LangChain
 - langchain-openai
 - Pydantic Settings + python-dotenv
@@ -24,7 +24,13 @@ xiliumini/
 ├── src/xiliumini/
 │   ├── __init__.py
 │   ├── cli/
-│   │   ├── tui
+│   │   ├── __init__.py
+│   │   └── tui/
+│   │       ├── __init__.py
+│   │       ├── app.py
+│   │       ├── approval.py
+│   │       ├── logo.py
+│   │       └── styles.tcss
 │   ├── config.py
 │   ├── events.py
 │   ├── runtime.py
@@ -40,6 +46,7 @@ xiliumini/
 │   │   ├── approval.py
 │   │   ├── checkpoint.py
 │   │   ├── harness_io.py
+│   │   ├── session.py
 │   │   └── trace.py
 │   ├── agents/
 │   │   └── analysis.py
@@ -65,10 +72,11 @@ xiliumini/
 ## 3. 架构
 
 ~~~text
-Typer CLI → Runtime → core/agent.py → LangGraph → Provider
-                    │                      │
-                    │                      └→ bounded workspace tools
-                    └→ per-session workspace
+Typer CLI → Textual TUI → stream_session_events → Intent Graph → chat responder
+                                      │                    └→ full workflow
+                                      └→ session transcript + workspace
+
+Typer ask/resume → Runtime → core/agent.py → LangGraph → bounded workspace tools
 ~~~
 
 参考 [MokioAgent](https://github.com/Wood-Q/MokioAgent) 的 CLI、Runtime、Graph、Provider、Tool 和 Trace 分层。
@@ -86,7 +94,7 @@ Typer CLI → Runtime → core/agent.py → LangGraph → Provider
 - PlannerEvent(todo)
 - ActorEvent(result, attempt)
 - VerifierEvent(passed, reason, attempt)
-- ProgressEvent(stage, message)
+- ProgressEvent(stage, message, event_type="progress", details={})
 - FinalEvent(text, session_id)
 - ErrorEvent(code, message)
 
@@ -94,12 +102,15 @@ Typer CLI → Runtime → core/agent.py → LangGraph → Provider
 
 `GraphState` 包含 task、todos、research/tool evidence、result、graph_state、verification、
 attempt、max_attempts、final_answer、session_id、workspace、resume_node，以及 Runtime 组装的三层
-Memory 和节点摘要字段。
+Memory 和节点摘要字段。入口图运行后还可包含 intent_route、intent_reason、intent_confidence 和
+chat_response。
 
-流程为 START → Planner → Verifier。Verifier 通过或次数耗尽时进入 Final，否则返回
-Planner；Planner 通过专业子 Agent 工具完成研究和实现。Final 不调用模型，只格式化验证状态。
+每轮 session 先运行 START → IntentRouter；chat 进入无工具 ChatResponder 并结束，workflow
+结束入口图后交给完整的 START → Planner → Verifier 图。Verifier 通过或次数耗尽时进入 Final，
+否则返回 Planner；Planner 通过专业子 Agent 工具完成研究和实现。Final 不调用模型，只格式化验证状态。
 `core/agent.py` 同时消费 `stream_mode=["updates", "custom"]`，前者映射节点完成
-事件，后者映射动作级进度。
+事件，后者映射动作级进度。结构化 custom payload 保留 event type 和 details；成功保存的运行中
+checkpoint 发布 `checkpoint_saved` 进度事件供界面展示。
 
 ### 工具
 
@@ -116,20 +127,30 @@ Planner；Planner 通过专业子 Agent 工具完成研究和实现。Final 不�
 - 文件工具只接受相对路径，并拒绝目录穿越、绝对路径、盘符、UNC 和符号链接逃逸。
 - 命令限制不是 OS 沙箱；生成的 Python 仍拥有当前进程的用户权限。
 
-### 会话（历史规划）与当前 Trace
+### 会话、TUI 与当前 Trace
 
-- 会话保存到 .xiliumini/sessions/SESSION_ID.json。
-- 字段包含 schema_version、session_id、时间、model 和 messages。
-- 使用临时文件和 os.replace 原子写入。
-- 会话 transcript 持久化仍为历史规划；当前 Trace 由 Task4 的 workspace 内 recorder 实现，
-  文件布局和脱敏规则见本文末尾，不使用旧 SESSION_ID.jsonl 方案。
+- 会话保存到 `.xiliumini/session/session.json`，并生成只读来源性质的
+  `.xiliumini/session/SESSION_SUMMARY.md` 人类可读镜像。
+- JSON 字段包含 session_id、全局递增 turn_index、最近十条 recent_turns、created_at 和 updated_at。
+- 单条 content 最多 4,000 字符；路由上下文最多 7,000 字符，并包含隔离 workspace 最近修改的
+  30 个相对文件路径和最近对话摘要，不读取文件内容。
+- 写入使用临时文件和 os.replace 原子替换；损坏数据不静默覆盖。
+- workflow 工具仍只访问 `.xiliumini/workspaces/<session_id>/`。当前 Trace 继续由 Task4 的
+  workspace recorder 实现，使用独立目录和脱敏规则。
+- Textual 后台线程同步消费 `stream_session_events`，只通过 Message 更新 UI；同一时间只运行
+  一个 turn，结束或异常后恢复输入。
+- `ApprovalGate` 用 Event 和锁连接 BashTool 同步回调与 UI modal；首个决策获胜，App 关闭时
+  未决请求全部按拒绝解析，避免 worker 永久阻塞。
+- TUI 分区显示 Logo/session 状态、Plan、可滚动事件流和输入框；Logo 颜色不可用时使用静态
+  纯文本，事件长字段以明确标记有界截断。
 
 ## 5. CLI 行为
 
 - doctor：检查 Python 版本、配置、数据目录和模型初始化。
 - ask：创建会话并显示 Planner、专业 Agent 进度、Verifier、Final，支持 `--max-attempts`
   （默认 3）和 `--no-stream`。
-- chat：启动内存对话；支持 /help、/status、/new、/exit。持久 transcript 恢复仍为历史规划。
+- 裸命令与 chat：配置校验成功后启动 Textual TUI，复用持久 session 与
+  `stream_session_events`；`chat --session` 暂不支持。
 - sessions：会话列表占位命令。
 - 根参数：`--workspace/-w`、`--max-attempts`、`--approval-mode inline|auto|deny`、
   `--checkpoint-mode light|strict|off`、`--trace-mode on|off`；位于子命令之前并作用于
@@ -144,6 +165,7 @@ Planner；Planner 通过专业子 Agent 工具完成研究和实现。Final 不�
 - Fake Chat Model 验证流式事件和工具循环。
 - mock 验证 Provider 配置映射和错误转换。
 - Typer CliRunner 验证命令、退出码和会话恢复。
+- Textual `run_test()`/Pilot 验证布局、事件映射、多轮 worker、审批竞态和关闭释放。
 - 真实 API 只做手动冒烟测试。
 
 ## 7. 执行 Task

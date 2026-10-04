@@ -16,10 +16,11 @@ from xiliumini.core.agent import stream_agent
 from xiliumini.core.approval import ApprovalDecision, ApprovalRequest, normalize_approval_mode
 from xiliumini.core.checkpoint import CheckpointManager
 from xiliumini.core.trace import TraceRecorder
-from xiliumini.errors import CheckpointError, WorkspaceError, XiliuminiError
-from xiliumini.events import ErrorEvent, RuntimeEvent
+from xiliumini.errors import CheckpointError, NodeOutputError, WorkspaceError, XiliuminiError
+from xiliumini.events import ErrorEvent, FinalEvent, RuntimeEvent
 from xiliumini.graph.memory import MemoryLimits, MemoryManager
 from xiliumini.graph.state import GraphState
+from xiliumini.graph.workflow import build_entry_workflow
 from xiliumini.providers.openai_compatible import classify_provider_error, create_chat_model
 from xiliumini.tools.approval_context import ApprovalConfig, approval_config
 from xiliumini.tools.preferences import UserPreferenceStore
@@ -117,6 +118,7 @@ class Runtime:
         workspace: Path,
         session_id: str,
         max_attempts: int,
+        context_summary: str = "",
     ) -> tuple[GraphState, MemoryManager]:
         memory_manager = self._memory(workspace)
         initial: dict[str, Any] = {
@@ -142,7 +144,7 @@ class Runtime:
             "code_agent_summary": "",
             "verifier_summary": "",
             "last_error": "",
-            "context_summary": "",
+            "context_summary": context_summary,
             "compression_events": [],
         }
         return cast(
@@ -206,6 +208,50 @@ class Runtime:
         try:
             inputs, memory_manager = self._fresh_inputs(task, workspace, session_id, max_attempts)
             yield from self._run(inputs, memory_manager, self._context(workspace, session_id))
+        except XiliuminiError as exc:
+            yield ErrorEvent(code=getattr(exc, "code", "runtime_error"), message=str(exc))
+        except Exception as exc:
+            error = classify_provider_error(exc)
+            yield ErrorEvent(code=error.code, message=str(error))
+
+    def stream_session(
+        self,
+        task: str,
+        session_id: str,
+        context_summary: str,
+        max_attempts: int = 3,
+    ) -> Generator[RuntimeEvent, None, None]:
+        """Route one session turn and answer lightweight chat directly."""
+        try:
+            workspace = create_session_workspace(self._data_dir, session_id)
+            inputs, memory_manager = self._fresh_inputs(
+                task,
+                workspace,
+                session_id,
+                max_attempts,
+                context_summary,
+            )
+            context = self._context(workspace, session_id)
+            with _activate_run_context(context):
+                routed = build_entry_workflow(self._model).invoke(
+                    inputs,
+                    config={"configurable": {"thread_id": session_id}},
+                )
+            route = routed.get("intent_route")
+            if route == "chat":
+                answer = routed.get("final_answer")
+                if not isinstance(answer, str):
+                    raise NodeOutputError("chat responder returned invalid output")
+                yield FinalEvent(text=answer, session_id=session_id)
+                return
+            if route != "workflow":
+                raise NodeOutputError("entry workflow returned invalid route")
+            TodoStore(workspace).start_task()
+            yield from self._run(
+                cast(GraphState, routed),
+                memory_manager,
+                context,
+            )
         except XiliuminiError as exc:
             yield ErrorEvent(code=getattr(exc, "code", "runtime_error"), message=str(exc))
         except Exception as exc:
@@ -286,13 +332,14 @@ def create_runtime(
     approval_handler: Callable[[ApprovalRequest], ApprovalDecision] | None = None,
     checkpoint_mode: str | None = None,
     trace_mode: str | None = None,
+    data_dir: Path | None = None,
 ) -> Runtime:
     """Construct the Supervisor runtime with independent specialist models."""
 
     main_model = create_chat_model(settings)
     return Runtime(
         main_model,
-        data_dir=settings.data_dir,
+        data_dir=settings.data_dir if data_dir is None else data_dir,
         agent_model_factory=lambda: create_chat_model(settings),
         tavily_api_key=settings.tavily_api_key,
         memory_limits=MemoryLimits(

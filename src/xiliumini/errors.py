@@ -14,6 +14,12 @@ class TraceError(XiliuminiError):
     code = "trace_error"
 
 
+class SessionError(XiliuminiError):
+    """Raised when durable conversation state is invalid or cannot be saved."""
+
+    code = "session_error"
+
+
 class ConfigError(XiliuminiError):
     """Raised when runtime configuration is invalid."""
 

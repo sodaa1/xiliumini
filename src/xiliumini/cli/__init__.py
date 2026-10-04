@@ -158,7 +158,7 @@ def main(
             raise typer.Exit(code=exit_code)
         return
     if context.invoked_subcommand is None:
-        _start_chat(options)
+        _start_tui(options)
 
 
 @app.command()
@@ -266,72 +266,37 @@ def chat(
     context: typer.Context,
     session: Annotated[str | None, typer.Option("--session")] = None,
 ) -> None:
-    """Start an in-memory conversation."""
+    """Start the persistent Textual conversation interface."""
 
     if session:
-        typer.echo("Session persistence is scheduled for Task 3.")
+        typer.echo("--session is not supported by the TUI yet.")
         raise typer.Exit(code=1)
-    _start_chat(_options(context))
+    _start_tui(_options(context))
 
 
-def _start_chat(options: _CliOptions | None = None) -> None:
+def _start_tui(options: _CliOptions | None = None) -> None:
     options = options or _CliOptions()
     try:
         settings = load_settings()
-        runtime = _create_cli_runtime(settings, options)
+        from xiliumini.cli.tui import run_tui
+
+        run_tui(
+            session_workspace=(
+                settings.data_dir if options.workspace is None else options.workspace
+            ),
+            max_attempts=options.max_attempts,
+            approval_mode=options.approval_mode,
+            checkpoint_mode=options.checkpoint_mode or settings.checkpoint_mode,
+            trace_mode=options.trace_mode or settings.trace_mode,
+        )
     except ConfigError as exc:
         typer.echo(f"Configuration error: {exc}")
         raise typer.Exit(code=2) from None
     except XiliuminiError as exc:
         typer.echo(f"Runtime error: {exc}")
         raise typer.Exit(code=1) from None
-
-    try:
-        _chat_loop(runtime, settings, options)
     except KeyboardInterrupt:
         typer.echo("\nGoodbye.")
-
-
-def _chat_loop(runtime: Runtime, settings: Settings, options: _CliOptions | None = None) -> None:
-    options = options or _CliOptions()
-    session_id = str(uuid4())
-    typer.echo(f"xiliumini {__version__} · {settings.model}")
-    typer.echo("Type /help for commands. Ctrl+C or Ctrl+D exits.")
-
-    while True:
-        try:
-            question = typer.prompt("❯", prompt_suffix=" ").strip()
-        except (EOFError, KeyboardInterrupt, typer.Abort):
-            typer.echo("\nGoodbye.")
-            return
-
-        if not question:
-            continue
-        if question == "/exit":
-            typer.echo("Goodbye.")
-            return
-        if question == "/help":
-            typer.echo("/help  /status  /new  /exit")
-            continue
-        if question == "/status":
-            typer.echo(f"Model: {settings.model}\nSession: {session_id}")
-            continue
-        if question == "/new":
-            session_id = str(uuid4())
-            typer.echo(f"New session: {session_id}")
-            continue
-        if question.startswith("/"):
-            typer.echo(f"Unknown command: {question}. Type /help.")
-            continue
-
-        _run_question(
-            runtime,
-            question,
-            session_id,
-            no_stream=False,
-            max_attempts=options.max_attempts,
-            workspace=options.workspace,
-        )
 
 
 @app.command("sessions")

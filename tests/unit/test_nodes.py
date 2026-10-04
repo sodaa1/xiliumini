@@ -6,7 +6,14 @@ from langchain_core.messages import ToolMessage
 from tests.agent_fakes import ScriptedModel, call, state
 from xiliumini.errors import MemoryBudgetError, MemorySystemError, WorkspaceError
 from xiliumini.graph.memory import MemoryLimits, MemoryManager
-from xiliumini.graph.nodes import final_node, planner_node, verifier_node
+from xiliumini.graph.nodes import (
+    chat_responder_node,
+    final_node,
+    intent_route_fn,
+    intent_router_node,
+    planner_node,
+    verifier_node,
+)
 from xiliumini.graph.state import ToolEvent
 from xiliumini.tools.preferences import UserPreferenceStore
 from xiliumini.tools.subagent_tools import SupervisorContext
@@ -21,6 +28,71 @@ def memory_manager(tmp_path, data_dir=None):
         model_name="test-model",
         token_counter=lambda _messages, _model: 1,
     )
+
+
+def test_intent_router_returns_high_confidence_chat_route_with_reason(tmp_path):
+    model = ScriptedModel(['{"route":"chat","reason":"ordinary greeting","confidence":0.92}'])
+
+    result = intent_router_node(
+        state(tmp_path, task="你好", context_summary="Earlier coding work is complete."),
+        model=model,
+    )
+
+    assert result == {
+        "intent_route": "chat",
+        "intent_reason": "ordinary greeting",
+        "intent_confidence": 0.92,
+    }
+    payload = json.loads(model.calls[0][1].content)
+    assert payload == {
+        "user_input": "你好",
+        "session_context": "Earlier coding work is complete.",
+    }
+
+
+@pytest.mark.parametrize(
+    ("response", "confidence"),
+    [
+        ('{"route":"chat","reason":"uncertain","confidence":0.54}', 0.54),
+        ('{"route":"other","reason":"invalid route","confidence":0.99}', 0.0),
+        ('{"route":"chat","reason":"invalid confidence","confidence":1.1}', 0.0),
+        ("not json", 0.0),
+        (RuntimeError("provider unavailable"), 0.0),
+    ],
+)
+def test_intent_router_defaults_uncertain_or_invalid_results_to_workflow(
+    tmp_path, response, confidence
+):
+    result = intent_router_node(state(tmp_path, task="继续"), model=ScriptedModel([response]))
+
+    assert result["intent_route"] == "workflow"
+    assert result["intent_confidence"] == confidence
+    assert result["intent_reason"]
+
+
+def test_intent_route_fn_only_selects_chat_for_explicit_chat_route(tmp_path):
+    assert intent_route_fn(state(tmp_path, intent_route="chat")) == "chat_responder"
+    assert intent_route_fn(state(tmp_path, intent_route="workflow")) == "planner"
+    assert intent_route_fn(state(tmp_path)) == "planner"
+
+
+def test_chat_responder_returns_model_text_as_chat_and_final_answer(tmp_path):
+    model = ScriptedModel(["我是 MokioClaw 的轻量聊天节点。"])
+
+    result = chat_responder_node(
+        state(tmp_path, task="你是谁？", context_summary="User asked about capabilities."),
+        model=model,
+    )
+
+    assert result == {
+        "chat_response": "我是 MokioClaw 的轻量聊天节点。",
+        "final_answer": "我是 MokioClaw 的轻量聊天节点。",
+    }
+    payload = json.loads(model.calls[0][1].content)
+    assert payload == {
+        "user_input": "你是谁？",
+        "session_context": "User asked about capabilities.",
+    }
 
 
 def test_planner_delegates_search_then_code_and_continues(monkeypatch, tmp_path):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from xiliumini.graph.state import TodoItem
 
@@ -23,6 +24,8 @@ class VerifierEvent:
 class ProgressEvent:
     stage: str
     message: str
+    event_type: str = "progress"
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

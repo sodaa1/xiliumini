@@ -110,6 +110,7 @@ def run_react(
                         "stage": agent,
                         "message": f"{agent}: {name}",
                         "tool": name,
+                        "args": args,
                     },
                 )
                 try:

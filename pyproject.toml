@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "tavily-python>=0.8,<0.9",
+  "textual>=8.2,<9",
   "langchain-core>=0.3,<2",
   "langchain-openai>=0.3,<2",
   "langgraph>=0.4,<2",

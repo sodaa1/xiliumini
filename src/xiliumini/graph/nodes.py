@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.config import get_stream_writer
@@ -28,11 +28,98 @@ class VerifierOutput(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class IntentRouterOutput(BaseModel):
+    route: Literal["chat", "workflow"]
+    reason: str = Field(min_length=1)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+INTENT_ROUTER_PROMPT = """You are the intent router for MokioClaw.
+
+Classify the user's latest input into exactly one route:
+- chat: greetings, thanks, identity/help questions, ordinary conceptual Q&A,
+  or conversational messages that do not need workspace access.
+- workflow: any request that needs creating/editing/reading files, running commands,
+  installing packages, searching the web, checking the current project, verifying a
+  result, or producing a concrete deliverable.
+
+When session context is provided, use it only to understand whether the latest
+input is a continuation of prior coding work. A short follow-up like "继续",
+"修一下", or "运行测试" should be workflow if it refers to prior workspace work.
+
+Return only JSON with this shape:
+{"route":"chat"|"workflow","reason":"brief reason","confidence":0.0}
+
+If uncertain, choose workflow.
+"""
+
+
+CHAT_RESPONDER_PROMPT = """You are MokioClaw's lightweight chat node.
+
+Answer the user directly and concisely. Do not claim that you read files,
+searched the web, ran commands, edited files, or inspected the workspace.
+If the user asks for work requiring tools or project context, say that it
+should be handled by the workflow route.
+
+If session context is provided, you may use the recent conversation summary to
+answer conversational follow-ups, but do not invent workspace facts.
+"""
+
+
 def _writer():
     try:
         return get_stream_writer()
     except RuntimeError:
         return None
+
+
+def _intent_payload(state) -> str:
+    return json.dumps(
+        {
+            "user_input": state["task"],
+            "session_context": state.get("context_summary", ""),
+        },
+        ensure_ascii=False,
+    )
+
+
+def intent_router_node(state, *, model: Any) -> dict[str, Any]:
+    try:
+        response = model.invoke(
+            [
+                SystemMessage(content=INTENT_ROUTER_PROMPT),
+                HumanMessage(content=_intent_payload(state)),
+            ]
+        )
+        parsed = IntentRouterOutput.model_validate_json(content_text(response.content))
+    except Exception:
+        return {
+            "intent_route": "workflow",
+            "intent_reason": "Intent router returned invalid output or model request failed",
+            "intent_confidence": 0.0,
+        }
+
+    route = parsed.route if parsed.confidence >= 0.55 else "workflow"
+    return {
+        "intent_route": route,
+        "intent_reason": parsed.reason,
+        "intent_confidence": parsed.confidence,
+    }
+
+
+def chat_responder_node(state, *, model: Any) -> dict[str, str]:
+    response = model.invoke(
+        [
+            SystemMessage(content=CHAT_RESPONDER_PROMPT),
+            HumanMessage(content=_intent_payload(state)),
+        ]
+    )
+    answer = content_text(response.content)
+    return {"chat_response": answer, "final_answer": answer}
+
+
+def intent_route_fn(state) -> str:
+    return "chat_responder" if state.get("intent_route") == "chat" else "planner"
 
 
 def planner_node(

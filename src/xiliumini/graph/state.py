@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NotRequired
 
 from typing_extensions import TypedDict
 
@@ -45,6 +45,10 @@ class AgentResult(TypedDict):
 
 
 class GraphState(TypedDict):
+    intent_route: NotRequired[Literal["chat", "workflow"]]
+    intent_reason: NotRequired[str]
+    intent_confidence: NotRequired[float]
+    chat_response: NotRequired[str]
     resume_node: Literal["planner", "verifier", "final"]
     supervisor_ok: bool
     task: str

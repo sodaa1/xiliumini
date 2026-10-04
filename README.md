@@ -51,16 +51,24 @@ represented as a Pydantic secret and is never written to CLI errors or tool outp
 
 ## Commands
 
-Enter the project directory and start an interactive Agent conversation. No `uv run`
-prefix or subcommand is needed:
+Enter the project directory and start the full-screen Textual conversation interface. No
+`uv run` prefix or subcommand is needed; `xiliumini chat` is an explicit alias:
 
 ```powershell
 cd E:\Learning\xiliumini
 xiliumini
+xiliumini chat
 ```
 
-Inside the conversation, type natural-language messages directly. Use `/help`,
-`/status`, `/new`, or `/exit` for local controls.
+The centered, large ASCII logo settles into a Claude Code-style welcome header with the
+tagline “你的专属智能 Agent” and a session status line. After the first message is submitted, the Logo hides and the header
+collapses to the session status so the conversation gets the available space. Submit
+natural-language messages in the bottom input; one turn runs at a time and the same session
+is reused. Each turn places plans, tool calls/results, handoffs, searches, checkpoints, and
+verifier details in a collapsed `思考过程` section. Select the section or press Enter to inspect
+it; when the turn finishes, its title shows the elapsed time. Final answers and terminal errors
+remain visible directly below the collapsed details. Terminals without color support receive a
+static plain-text logo.
 
 Check Python, configuration, the data directory, and model construction:
 
@@ -76,11 +84,14 @@ xiliumini ask "Calculate (17 + 5) * 3" --no-stream
 ```
 
 Harness controls are root options, so place them before `ask` or `chat` (the existing
-`ask --max-attempts` spelling remains supported):
+`ask --max-attempts` spelling remains supported). With the TUI, `--workspace` selects the
+session data root; with `ask`, it continues to select an explicit execution workspace:
 
 ```powershell
 xiliumini --workspace ".xiliumini/workspaces/my-task" --max-attempts 5 `
   --approval-mode inline --checkpoint-mode strict --trace-mode on ask "Implement it"
+xiliumini --workspace ".xiliumini" --max-attempts 5 `
+  --approval-mode inline --checkpoint-mode strict --trace-mode on chat
 ```
 
 `--approval-mode` accepts `inline`, `auto`, or `deny`; `--checkpoint-mode` accepts
@@ -175,8 +186,10 @@ downloads (`curl`, `wget`), and development servers (`uvicorn`, `python -m http.
 require approval. BashTool's `inline` default invokes an application-supplied
 `approval_handler(ApprovalRequest) -> ApprovalDecision`; without a handler it rejects
 the command. `auto` permits recognized risky commands and `deny` rejects them.
-The CLI supplies an interactive handler in `inline` mode: it displays the risk and exact
-command, defaults to denial, and waits for `typer.confirm`. `auto` and `deny` never prompt.
+The TUI supplies an approval modal in `inline` mode with the tool, risk reason, workspace,
+and full command. Press `Y` or `Enter` to approve and `N` or `Escape` to deny; closing the app
+denies pending requests and releases blocked workers. The non-interactive `ask` command keeps
+its `typer.confirm` prompt. `auto` and `deny` never prompt.
 Handlers are run-local ContextVar data and are not written to GraphState, checkpoints, or
 traces. These modes are CLI/programmatic options rather than Settings environment variables.
 Risky results carry
@@ -198,8 +211,11 @@ xiliumini chat --help
 xiliumini sessions
 ```
 
-Persistent chat transcripts remain roadmap work; Task3 implements Runtime-managed
-working/history memory. Task4 adds checkpoint recovery and execution traces below.
+The TUI and programmatic session API persist a bounded transcript in
+`.xiliumini/session/session.json` and a readable mirror in `SESSION_SUMMARY.md`. Each input
+first runs through an intent graph: ordinary conversation uses the no-tool chat responder,
+while workspace work continues through the full Planner/Verifier workflow. CLI transcript
+turns use this same `stream_session_events` path.
 The legacy analysis Agent is no longer registered in the Supervisor path. Each specialist
 has an independent bounded ReAct conversation (search: 4 loops, code: 10 loops).
 Planner has an 8-loop budget per round. Only summaries, research and tool evidence enter
@@ -211,13 +227,13 @@ Shared state, nodes, and graph routing live in `src/xiliumini/graph/state.py`,
 `src/xiliumini/agents/` are specialist sub-Agents invoked only for focused work.
 
 The Typer entry point is `src/xiliumini/cli/__init__.py` (there is no separate
-`cli/app.py`). Programmatic integrations can import `stream_agent_events` from
-`xiliumini.core` or `xiliumini.core.agent`:
+`cli/app.py`). Programmatic integrations can import `stream_agent_events` or the multi-turn
+`stream_session_events` from `xiliumini.core` or `xiliumini.core.agent`:
 
 ```python
 from pathlib import Path
 
-from xiliumini.core import stream_agent_events
+from xiliumini.core import stream_agent_events, stream_session_events
 
 for item in stream_agent_events(
     "Implement the requested change",
@@ -226,12 +242,26 @@ for item in stream_agent_events(
     trace_mode="on",
 ):
     print(item)  # {"type": "custom_event" | "graph_event", "event": {...}}
+
+for item in stream_session_events(
+    "继续完成刚才的任务",
+    session_workspace=Path(".xiliumini"),
+    checkpoint_mode="light",
+    trace_mode="on",
+):
+    print(item)
 ```
 
 This compatibility iterator delegates to Runtime and adapts each stable RuntimeEvent once;
 it does not create a second Checkpoint or Trace recorder. Pass the same path as
 `workspace` and `resume_workspace` to resume; conflicting paths produce a redacted
 workspace error.
+
+`stream_session_events` defaults `session_workspace` to `.xiliumini`. It stores at most ten
+recent messages, limits each message to 4,000 characters, and supplies at most 7,000
+characters of routing context. That context includes up to 30 recently modified relative
+paths from `.xiliumini/workspaces/<session-id>/`; file contents and session/checkpoint/trace
+metadata are not included.
 
 ## Checkpoints and execution traces
 

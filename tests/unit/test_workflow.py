@@ -1,7 +1,7 @@
 import pytest
 
 import xiliumini.graph.workflow as workflow
-from tests.agent_fakes import state
+from tests.agent_fakes import ScriptedModel, state
 
 
 def install(monkeypatch, pass_on, manager):
@@ -77,3 +77,41 @@ def test_resume_entry(monkeypatch, tmp_path, entry, attempt, status, expected):
 def test_resume_entry_rejects_unknown_node(tmp_path):
     with pytest.raises(ValueError, match="resume node"):
         workflow.build_workflow(object(), object()).invoke(state(tmp_path, resume_node="actor"))
+
+
+def test_entry_workflow_returns_chat_response_for_chat_route(tmp_path):
+    scripted = ScriptedModel(
+        [
+            '{"route":"chat","reason":"greeting","confidence":0.9}',
+            "你好！有什么我可以帮你的？",
+        ]
+    )
+
+    result = workflow.build_entry_workflow(scripted).invoke(state(tmp_path, task="你好"))
+
+    assert result["intent_route"] == "chat"
+    assert result["final_answer"] == "你好！有什么我可以帮你的？"
+    assert len(scripted.calls) == 2
+
+
+def test_entry_workflow_stops_for_main_workflow_handoff(tmp_path):
+    scripted = ScriptedModel(['{"route":"workflow","reason":"needs files","confidence":0.99}'])
+
+    result = workflow.build_entry_workflow(scripted).invoke(
+        state(tmp_path, task="读取 pyproject.toml")
+    )
+
+    assert result["intent_route"] == "workflow"
+    assert result["intent_reason"] == "needs files"
+    assert result.get("chat_response", "") == ""
+    assert len(scripted.calls) == 1
+
+
+def test_complex_workflow_name_runs_the_existing_full_graph(monkeypatch, tmp_path):
+    manager = object()
+    calls = install(monkeypatch, 1, manager)
+
+    result = workflow.build_complex_workflow(object(), manager).invoke(state(tmp_path, attempt=0))
+
+    assert calls == ["planner", "verifier", "final"]
+    assert result["final_answer"] == "passed"

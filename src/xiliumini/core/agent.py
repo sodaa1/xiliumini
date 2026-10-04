@@ -7,6 +7,15 @@ from pathlib import Path
 from typing import Any
 
 from xiliumini.core.approval import ApprovalDecision, ApprovalRequest
+from xiliumini.core.session import (
+    MAX_TURN_CONTENT,
+    SESSION_ROOT,
+    append_assistant_turn,
+    append_user_turn,
+    build_session_context,
+    load_or_create_session,
+    save_session,
+)
 from xiliumini.events import (
     ErrorEvent,
     FinalEvent,
@@ -48,10 +57,24 @@ def _chunk_events(chunk: Any, session_id: str) -> Iterator[RuntimeEvent]:
     if not isinstance(payload, dict):
         return
     if mode == "custom":
+        event_type = payload.get("type")
         stage = payload.get("stage")
         message = payload.get("message")
+        if event_type == "handoff" and not isinstance(stage, str):
+            stage = "planner"
+        if event_type == "handoff" and not isinstance(message, str):
+            agent = payload.get("agent")
+            summary = payload.get("summary")
+            target = agent if isinstance(agent, str) else "unknown"
+            outcome = summary if isinstance(summary, str) else "Delegation completed"
+            message = f"planner → {target}: {outcome}"
         if isinstance(stage, str) and isinstance(message, str):
-            yield ProgressEvent(stage=stage, message=message)
+            yield ProgressEvent(
+                stage=stage,
+                message=message,
+                event_type=event_type if isinstance(event_type, str) else "progress",
+                details=deepcopy(payload),
+            )
         return
     if mode != "updates":
         return
@@ -80,14 +103,23 @@ def stream_agent(
     latest_state = deepcopy({key: value for key, value in inputs.items() if key != "runtime"})
     latest_node = None
 
-    def save(status: str, event: Any = None) -> None:
+    def save(status: str, event: Any = None) -> ProgressEvent | None:
         if checkpoint_manager is None or checkpoint_manager.mode == "off":
-            return
+            return None
         saved = checkpoint_manager.save(
             deepcopy(latest_state), status=status, latest_node=latest_node, event=deepcopy(event)
         )
         if saved is not None and trace_recorder is not None:
             trace_recorder.record_custom_event(deepcopy(saved))
+        if not isinstance(saved, dict):
+            return None
+        saved_type = saved.get("type")
+        return ProgressEvent(
+            stage="checkpoint",
+            message=f"Checkpoint saved: {status}",
+            event_type=saved_type if isinstance(saved_type, str) else "checkpoint_saved",
+            details=deepcopy(saved),
+        )
 
     status = "completed"
     primary: BaseException | None = None
@@ -108,13 +140,16 @@ def stream_agent(
             stream_mode=["updates", "custom"],
         )
         for chunk in chunks:
+            checkpoint_events: list[ProgressEvent] = []
             if isinstance(chunk, tuple) and len(chunk) == 2 and isinstance(chunk[1], dict):
                 mode, payload = chunk
                 if mode == "custom":
                     if trace_recorder is not None:
                         trace_recorder.record_custom_event(deepcopy(payload))
                     if checkpoint_manager is not None and checkpoint_manager.mode == "strict":
-                        save("running", payload)
+                        saved_event = save("running", payload)
+                        if saved_event is not None:
+                            checkpoint_events.append(saved_event)
                 elif mode == "updates":
                     for node, update in payload.items():
                         if isinstance(update, dict):
@@ -123,8 +158,11 @@ def stream_agent(
                         node_event = {node: update}
                         if trace_recorder is not None:
                             trace_recorder.record_graph_update(deepcopy(node_event))
-                        save("running", node_event)
+                        saved_event = save("running", node_event)
+                        if saved_event is not None:
+                            checkpoint_events.append(saved_event)
             yield from _chunk_events(chunk, inputs["session_id"])
+            yield from checkpoint_events
     except BaseException as error:
         primary = error
         status = (
@@ -211,6 +249,78 @@ def stream_agent_events(
     )
     try:
         for event in events:
+            yield {
+                "type": "custom_event" if isinstance(event, ProgressEvent) else "graph_event",
+                "event": asdict(event),
+            }
+    finally:
+        close = getattr(events, "close", None)
+        if callable(close):
+            close()
+
+
+def stream_session_events(
+    task: str,
+    *,
+    session_workspace: Path | None = None,
+    max_attempts: int = 3,
+    approval_mode: str = "inline",
+    approval_handler: Callable[[ApprovalRequest], ApprovalDecision] | None = None,
+    checkpoint_mode: str = "light",
+    trace_mode: str = "on",
+) -> Generator[dict[str, Any], None, None]:
+    """Persist and route one multi-turn session message."""
+    from xiliumini.config import load_settings
+    from xiliumini.runtime import create_runtime
+
+    workspace = (session_workspace or Path(SESSION_ROOT).parent).expanduser().resolve()
+    session = load_or_create_session(workspace)
+    user_turn = append_user_turn(session, task)
+    save_session(workspace, session)
+    context = build_session_context(workspace, session)
+    runtime = create_runtime(
+        load_settings(),
+        approval_mode=approval_mode,
+        approval_handler=approval_handler,
+        checkpoint_mode=checkpoint_mode,
+        trace_mode="full" if trace_mode == "on" else trace_mode,
+        data_dir=workspace,
+    )
+    events = runtime.stream_session(
+        task,
+        session["session_id"],
+        context,
+        max_attempts=max_attempts,
+    )
+    route = "chat"
+    planner_summary = ""
+    verifier_summary = ""
+    try:
+        for event in events:
+            if isinstance(event, (ProgressEvent, PlannerEvent, VerifierEvent)):
+                route = "workflow"
+            if isinstance(event, PlannerEvent) and event.summary:
+                planner_summary = event.summary
+            elif isinstance(event, VerifierEvent) and event.reason:
+                verifier_summary = event.reason
+            if isinstance(event, FinalEvent):
+                if verifier_summary:
+                    available = MAX_TURN_CONTENT - len(verifier_summary) - 2
+                    summary = (
+                        verifier_summary[:MAX_TURN_CONTENT]
+                        if available <= 0 or not planner_summary
+                        else f"{planner_summary[:available]}; {verifier_summary}"
+                    )
+                else:
+                    summary = planner_summary[:MAX_TURN_CONTENT]
+                append_assistant_turn(
+                    session,
+                    turn=user_turn + 1,
+                    route=route,
+                    content=event.text,
+                    summary=summary,
+                )
+                save_session(workspace, session)
             yield {
                 "type": "custom_event" if isinstance(event, ProgressEvent) else "graph_event",
                 "event": asdict(event),
