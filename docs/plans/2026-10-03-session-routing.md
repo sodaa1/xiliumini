@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, pathlib, stdlib JSON/UUID/datetime, LangGraph, pytest, Pydantic-backed project configuration
 
-**Spec:** `docs/superpowers/specs/2026-10-03-session-routing-design.md`
+**Spec:** `docs/specs/2026-10-03-session-routing-design.md`
 
 ## Global Constraints
 

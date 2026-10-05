@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Typer, LangGraph, ContextVar, pytest, Ruff, Pyright.
 
-**Spec:** `docs/superpowers/specs/2026-09-30-task4-checkpoint-trace-design.md` plus the user-requested `stream_agent_events`/CLI signatures from 2026-10-02.
+**Spec:** `docs/specs/2026-09-30-task4-checkpoint-trace-design.md` plus the user-requested `stream_agent_events`/CLI signatures from 2026-10-02.
 
 ## Global Constraints
 

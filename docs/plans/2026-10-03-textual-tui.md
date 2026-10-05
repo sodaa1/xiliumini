@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, Textual 8.x, Rich, Typer, pytest/pytest-asyncio, Ruff, Pyright
 
-**Spec:** `docs/superpowers/specs/2026-10-03-textual-tui-design.md`
+**Spec:** `docs/specs/2026-10-03-textual-tui-design.md`
 
 ## Global Constraints
 
@@ -365,4 +365,4 @@ Expected: no whitespace errors.
 
 - [ ] **Step 5: Perform a final requirements audit**
 
-Compare the implementation against `docs/superpowers/specs/2026-10-03-textual-tui-design.md`, confirm every acceptance criterion has test or manual evidence, and write the actual commands/results into `项目进程.md`.
+Compare the implementation against `docs/specs/2026-10-03-textual-tui-design.md`, confirm every acceptance criterion has test or manual evidence, and write the actual commands/results into `项目进程.md`.

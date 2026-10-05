@@ -1,9 +1,43 @@
+# Secrets and local configuration
 .env
+.env.*
+!/.env.example
+
+# Local agent instructions and test sources
+AGENTS.md
+tests/
+
+# Virtual environments and package caches
 .venv/
+.venv-*/
+.uv-cache/
+.uv-python/
+
+# Runtime data
 .xiliumini/
-.pytest_cache/
-.ruff_cache/
+
+# Python caches and build output
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local agent workspaces
+.agents/
+.codex/
 .superpowers/
 .worktrees/
+
+project-showcase/

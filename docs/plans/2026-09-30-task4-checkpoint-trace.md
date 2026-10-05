@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, LangGraph, LangChain messages, Pydantic Settings, Typer, Git CLI, pytest, Ruff, Pyright.
 
-**Spec:** `docs/superpowers/specs/2026-09-30-task4-checkpoint-trace-design.md`
+**Spec:** `docs/specs/2026-09-30-task4-checkpoint-trace-design.md`
 
 ## Global Constraints
 

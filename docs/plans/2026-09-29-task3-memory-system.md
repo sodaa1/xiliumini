@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12+, LangGraph, LangChain Core messages/tools, Pydantic Settings, tiktoken, pytest, Ruff, Pyright
 
-**Spec:** `docs/superpowers/specs/2026-09-29-task3-memory-system-design.md`
+**Spec:** `docs/specs/2026-09-29-task3-memory-system-design.md`
 
 ## Global Constraints
 

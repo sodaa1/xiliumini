@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12+、LangGraph、LangChain Core、Pydantic 2、`tavily-python>=0.8,<0.9`、pytest、Ruff、Pyright、uv。
 
-**Spec:** `docs/superpowers/specs/2026-09-26-task2-supervisor-subagents-design.md`
+**Spec:** `docs/specs/2026-09-26-task2-supervisor-subagents-design.md`
 
 ## Global Constraints
 

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12+, LangGraph, LangChain Core, Pydantic 2, Typer, pytest, Ruff, Pyright, uv.
 
-**Spec:** `docs/superpowers/specs/2026-09-25-task1-langgraph-plan-act-verify-design.md`
+**Spec:** `docs/specs/2026-09-25-task1-langgraph-plan-act-verify-design.md`
 
 ## Global Constraints
 

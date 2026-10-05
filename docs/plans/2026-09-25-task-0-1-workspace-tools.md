@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, pathlib, tempfile/os.replace, Pydantic 2, LangChain Core, LangGraph, pytest, pytest-asyncio, Ruff, Pyright.
 
-**Spec:** `docs/superpowers/specs/2026-09-25-task-0-1-workspace-tools-design.md`
+**Spec:** `docs/specs/2026-09-25-task-0-1-workspace-tools-design.md`
 
 ## Global Constraints
 
