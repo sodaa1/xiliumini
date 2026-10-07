@@ -25,6 +25,7 @@ Starting from a basic **ReAct + Tool Calling** loop, the project progressively a
 - Trace observability
 - Persistent Sessions
 - A Textual TUI
+- Capability Harness with Skill, MCP, policy/hook, and automation interfaces
 
 Rather than wrapping a single model call, `xiliumini` develops an Agent from simply being
 able to call tools into a complete system capable of **planning, execution, verification,
@@ -47,6 +48,7 @@ management.
 - **Recoverable runs**: Checkpoints preserve state and file snapshots, allowing execution to resume from safe graph nodes.
 - **Structured tracing**: Traces record nodes, tools, approvals, handoffs, duration, and failures while redacting sensitive fields.
 - **Web research**: uses a Tavily API Key when available and can try keyless mode when authentication fails or no key is configured.
+- **Extensible capabilities**: discovers Skills and MCP providers on demand, routes execution through policy and hooks, and exposes automation interfaces without loading every capability into model context.
 
 ## Features
 
@@ -109,11 +111,31 @@ when verification does not pass.
                     ┌────────────┐
                     │   Final    │
                     └────────────┘
+
+        Automation ────────▶ Runtime ────────▶ Intent Router
+
+        Supervisor / specialist Agent
+                    │
+                    ▼
+            Capability Manager
+                    │
+                    ▼
+          Skill / MCP / Builtin
+                    │
+                    ▼
+            Execution Gateway
+                    │
+                    ├──▶ Tool Policy
+                    ├──▶ Before Hook
+                    ├──▶ Tool execution
+                    └──▶ After Hook / audit
 ```
 
 Ordinary conversations receive a fast response through `ChatResponder`. Requests involving
 file creation or modification, command execution, web research, coding, tests, error fixes,
 or continued workspace tasks enter the full Agent workflow.
+Workflow Agents discover Skills and MCP providers when needed. Automation is another trigger
+for the same Runtime and Agent workflow.
 
 ## Project Structure
 
@@ -121,12 +143,21 @@ or continued workspace tasks enter the full Agent workflow.
 xiliumini/
 ├── src/xiliumini/
 │   ├── agents/       # Specialist Agents and the shared ReAct loop
+│   ├── automation/   # Scheduled tasks, persistence, and Runtime runner
+│   ├── capabilities/ # Capability Manager, Skills, MCP, and meta tools
 │   ├── cli/          # Typer CLI and Textual TUI
 │   ├── core/         # Approval, Checkpoint, Session, and Trace
+│   ├── execution/    # Execution Gateway
 │   ├── graph/        # LangGraph state, nodes, routing, and verification
+│   ├── hooks/        # Post-execution hooks
+│   ├── policy/       # Tool policy decisions
 │   ├── providers/    # OpenAI-compatible model adapters
 │   ├── storage/      # Session and Trace storage interfaces
 │   └── tools/        # File, search, command, Todo, Notepad, and other tools
+├── .xiliumini/
+│   ├── skills/        # Versioned Agent Skills
+│   ├── mcp/<provider>/mcp.json  # Versioned MCP provider configurations
+│   └── workspaces/    # Local Runtime workspaces
 ├── docs/             # Product, specification, evolution, design, and implementation docs
 ├── .env.example      # Configuration template
 ├── pyproject.toml    # Project and dependency configuration
@@ -210,6 +241,14 @@ Fix the previous error
 ```powershell
 uv run xiliumini ask "Analyze the current project structure and suggest improvements"
 uv run xiliumini ask "Calculate (17 + 5) * 3" --no-stream
+```
+
+### Automation
+
+```powershell
+uv run xiliumini automation add daily-brief --name "Daily brief" --prompt "Summarize AI news" --daily 09:00
+uv run xiliumini automation list
+uv run xiliumini automation start
 ```
 
 ### Workspace and Resume

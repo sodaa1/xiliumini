@@ -11,6 +11,7 @@ from uuid import uuid4
 import typer
 
 from xiliumini import __version__
+from xiliumini.cli.extensions import automation_app, mcp_app, skills_app
 from xiliumini.config import Settings, load_settings
 from xiliumini.core.approval import ApprovalDecision, ApprovalRequest
 from xiliumini.errors import ConfigError, XiliuminiError
@@ -30,6 +31,9 @@ app = typer.Typer(
     invoke_without_command=True,
     pretty_exceptions_show_locals=False,
 )
+app.add_typer(skills_app, name="skills")
+app.add_typer(mcp_app, name="mcp")
+app.add_typer(automation_app, name="automation")
 
 
 @dataclass(frozen=True, slots=True)

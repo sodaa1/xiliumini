@@ -18,6 +18,7 @@ PYTEST_FLAGS = {
     "-v",
     "--verbose",
     "-x",
+    "-rf",
     "--exitfirst",
     "--disable-warnings",
     "--strict-markers",

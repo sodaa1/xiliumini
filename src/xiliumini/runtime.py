@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Generator, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -11,6 +11,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import SecretStr
 
 from xiliumini.agents.react import model_factory
+from xiliumini.capabilities.manager import CapabilityManager
+from xiliumini.capabilities.mcp import MCPManager
+from xiliumini.capabilities.skills import SkillRegistry
 from xiliumini.config import Settings
 from xiliumini.core.agent import stream_agent
 from xiliumini.core.approval import ApprovalDecision, ApprovalRequest, normalize_approval_mode
@@ -18,9 +21,12 @@ from xiliumini.core.checkpoint import CheckpointManager
 from xiliumini.core.trace import TraceRecorder
 from xiliumini.errors import CheckpointError, NodeOutputError, WorkspaceError, XiliuminiError
 from xiliumini.events import ErrorEvent, FinalEvent, RuntimeEvent
+from xiliumini.execution.gateway import RunContext, active_run
 from xiliumini.graph.memory import MemoryLimits, MemoryManager
 from xiliumini.graph.state import GraphState
 from xiliumini.graph.workflow import build_entry_workflow
+from xiliumini.hooks.engine import HookEngine
+from xiliumini.policy.engine import PolicyEngine
 from xiliumini.providers.openai_compatible import classify_provider_error, create_chat_model
 from xiliumini.tools.approval_context import ApprovalConfig, approval_config
 from xiliumini.tools.preferences import UserPreferenceStore
@@ -40,6 +46,10 @@ class _RunContext:
     approval_mode: str
     approval_handler: Callable[[ApprovalRequest], ApprovalDecision] | None
     session_id: str = ""
+    event_sink: Callable[[dict[str, Any]], None] | None = None
+    actor_type: str = "interactive"
+    policy_profile: str = "interactive"
+    hook_failures: list[str] = field(default_factory=list)
 
 
 @contextmanager
@@ -49,9 +59,27 @@ def _activate_run_context(context: _RunContext) -> Iterator[None]:
     approval_token = approval_config.set(
         ApprovalConfig(context.approval_mode, context.approval_handler)
     )
+    capability_token = active_run.set(
+        RunContext(
+            run_id=context.trace_id or context.session_id,
+            session_id=context.session_id,
+            workspace=context.workspace,
+            data_dir=context.data_dir,
+            actor_type=context.actor_type,
+            policy_profile=context.policy_profile,
+            event_sink=context.event_sink,
+            capability_manager=context.owner._capabilities,
+            policy_engine=context.owner._policy_engine,
+            approval_handler=context.approval_handler,
+            approval_mode=context.approval_mode,
+            hook_engine=context.owner._hook_engine,
+            hook_failures=context.hook_failures,
+        )
+    )
     try:
         yield
     finally:
+        active_run.reset(capability_token)
         approval_config.reset(approval_token)
         search_api_key.reset(search_token)
         model_factory.reset(model_token)
@@ -75,10 +103,20 @@ class Runtime:
         trace_id: str | None = None,
         approval_mode: str = "inline",
         approval_handler: Callable[[ApprovalRequest], ApprovalDecision] | None = None,
+        actor_type: str = "interactive",
+        policy_profile: str = "interactive",
     ) -> None:
         self._model = model
         self._checkpointer = checkpointer or InMemorySaver()
         self._data_dir = data_dir
+        self._mcp_manager = MCPManager(data_dir / "mcp")
+        self._capabilities = CapabilityManager(
+            skill_registry=SkillRegistry(data_dir / "skills"), mcp_manager=self._mcp_manager
+        )
+        self._policy_engine = PolicyEngine(
+            data_dir / "policy.json", trusted_mcp_servers=set(self._mcp_manager.servers())
+        )
+        self._hook_engine = HookEngine(data_dir / "hooks.json")
         self._agent_model_factory = agent_model_factory
         self._tavily_api_key = tavily_api_key
         self._memory_limits = memory_limits or MemoryLimits(64_000, 0.8, 8_000)
@@ -89,6 +127,9 @@ class Runtime:
         self._trace_id = trace_id
         self._approval_mode = normalize_approval_mode(approval_mode)
         self._approval_handler = approval_handler
+        self._actor_type = actor_type
+        self._policy_profile = policy_profile
+        self.last_trace_id: str | None = None
 
     def _context(self, workspace: Path, session_id: str = "") -> _RunContext:
         return _RunContext(
@@ -101,6 +142,8 @@ class Runtime:
             self._approval_mode,
             self._approval_handler,
             session_id,
+            actor_type=self._actor_type,
+            policy_profile=self._policy_profile,
         )
 
     def _memory(self, workspace: Path) -> MemoryManager:
@@ -294,7 +337,8 @@ class Runtime:
     ) -> Iterator[RuntimeEvent]:
         checkpoint = CheckpointManager(context, task=inputs["task"])
         trace = TraceRecorder(context, task=inputs["task"])
-        context = replace(context, trace_id=trace.trace_id)
+        self.last_trace_id = trace.trace_id
+        context = replace(context, trace_id=trace.trace_id, event_sink=trace.record_custom_event)
         checkpoint.trace_id = trace.trace_id
         events = None
         try:
@@ -333,6 +377,8 @@ def create_runtime(
     checkpoint_mode: str | None = None,
     trace_mode: str | None = None,
     data_dir: Path | None = None,
+    actor_type: str = "interactive",
+    policy_profile: str = "interactive",
 ) -> Runtime:
     """Construct the Supervisor runtime with independent specialist models."""
 
@@ -359,4 +405,6 @@ def create_runtime(
         trace_id=settings.trace_id,
         approval_mode=approval_mode,
         approval_handler=approval_handler,
+        actor_type=actor_type,
+        policy_profile=policy_profile,
     )

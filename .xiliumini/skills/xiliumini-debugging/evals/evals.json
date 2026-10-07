@@ -1,0 +1,41 @@
+{
+  "skill_name": "xiliumini-debugging",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "这个脚本一跑就报 KeyError: 'user_id'，帮我排查并修好。我看不懂它的 stack trace，麻烦找到真正的原因再改代码，不要用 try/except 把异常吞掉。",
+      "expected_output": "一份按固定模板输出的中文调试报告：Symptoms 记录 KeyError 的类型、完整错误信息与触发命令；Reproduction 给出最小复现步骤并确认 100% 复现；Evidence 粘贴 stack trace 中最相关的若干帧并标出抛错帧与调用链；Root cause 用一句话指出是哪个层级/边界做出了错误假设（例如上游写入漏字段，而下游无条件下标访问）；Hypothesis 给出可证伪假设及其验证结果；Minimal fix 只做根因所需的最小改动（如修正上游写入或在访问处显式校验并给出明确错误）；Tests 展示同一测试修复前失败、修复后通过的 Red→Green 对应关系及回归运行结果；Remaining risks 说明未覆盖场景。",
+      "files": [],
+      "expectations": [
+        "根因陈述与 stack trace 中实际抛错的帧位置一致，而不是只复述症状或错误类型",
+        "报告包含同一测试先失败（Red）后通过（Green）的明确对应关系",
+        "Minimal fix 仅改动根因所在的最小范围，未做无关重构、也未用吞掉异常的方式掩盖问题",
+        "报告按 Symptoms / Reproduction / Evidence / Root cause / Hypothesis / Minimal fix / Tests / Remaining risks 的顺序完整给出全部八节"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "tests/test_billing.py::test_invoice_total 上周跑还是通过的，今天在仓库里跑就挂了，报错是 assert 900 == 950。是不是我最近的改动引入的回归？帮我查清楚并修好，不要顺手把测试的期望值改成 900 让它变绿。",
+      "expected_output": "一份中文调试报告：Symptoms 记录失败的测试节点 id、断言差异（900 vs 950）与在何种环境下失败；Reproduction 给出可复现的 pytest 命令与稳定复现结果；Evidence 包含 git log/git diff（或 git bisect）指向的最近变更、相关计算路径的日志或中间值；Pattern Comparison 对比同仓库中仍然正常的相似测试/实现并列出关键差异与依赖假设；Root cause 明确指出是新增或修改的业务代码改变了计算逻辑或数据来源（而非测试文件）；Hypothesis Testing 说明所提假设如何被证据验证或排除；Minimal fix 在业务代码中做最小根因修复并说明为何不影响其他行为；Tests 给出修复前失败的 pytest 命令与修复后同一测试及回归测试通过的命令输出摘要；Remaining risks 说明剩余风险。",
+      "files": [],
+      "expectations": [
+        "报告通过 git log/git diff 或二分定位指出引入回归的具体提交或变更，而不是笼统猜测",
+        "Root cause 指向业务计算逻辑或数据来源的具体变化，并给出支撑它的证据（差异、中间值或对比实现）",
+        "报告明确未通过修改测试断言期望值来让测试变绿，或在断言本身被证明有误时给出证据与理由",
+        "Tests 节包含修复前失败的 pytest 命令与修复后同一测试及回归测试通过的命令输出摘要"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "CI 上 tests/test_worker.py::test_queue_drain 大约每 20 次会超时失败一次，本地几乎复现不出来，看着像 flaky。帮我定位根因，别用调大 sleep 或者把超时时间加长来糊过去。",
+      "expected_output": "一份中文调试报告：Symptoms 记录失败的测试节点、失败形态（超时/断言）、观测到的失败频率（约 1/20）以及 CI 与本地环境的差异；Reproduction 明确说明本地无法稳定复现，并给出可量化的复现率与放大策略（例如循环运行 N 次、注入延迟、限制并发）；Evidence 列出 CI 日志片段、相关同步/等待逻辑、最近变更；Pattern Comparison 对比同仓库中稳定的并发或队列测试，列出其同步原语与依赖假设差异；Hypothesis Testing 一次只提出一个可证伪假设（如竞态、资源泄漏、外部依赖慢），用事件/条件变量/同步原语或压力放大等确定性化手段验证，而不是依赖 sleep；Fix & Verify 先用确定性化手段建立能在本地稳定复现的失败测试（Red），再对根因做最小修复（Green）；Tests 报告重复运行结果与原 flaky 用例的验证；Remaining risks 说明残余不确定性、统计置信度与后续加固或监控建议。",
+      "files": [],
+      "expectations": [
+        "报告明确承认本地无法稳定复现，并给出可量化的复现率与 CI 与本地环境的差异",
+        "验证手段使用事件、条件变量、同步原语或压力放大等确定性化方法，而不是硬编码 sleep 或仅调大超时",
+        "修复前存在一个能在本地稳定复现该竞态/间歇性问题的失败测试，且修复后该测试通过（Red→Green）",
+        "Remaining risks 说明残余不确定性或统计置信度，并给出后续监控或加固措施"
+      ]
+    }
+  ]
+}

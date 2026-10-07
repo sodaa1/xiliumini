@@ -24,6 +24,7 @@
 - Trace 可观测性
 - 持久化 Session
 - Textual TUI
+- Capability Harness：Skill、MCP、权限/Hook 与自动化接口
 
 它并非简单封装一次模型调用，而是尝试把 Agent 从“能够调用工具”逐步构建为具备
 **规划、执行、验证、记忆、恢复与持续交互能力**的完整系统。
@@ -43,6 +44,7 @@
 - **可恢复运行**：Checkpoint 保存状态与文件快照，支持从安全图节点继续执行。
 - **结构化追踪**：Trace 记录节点、工具、审批、handoff、耗时和失败信息，并脱敏敏感字段。
 - **联网检索**：优先使用 Tavily API Key，认证失败或未配置时可尝试 keyless 模式。
+- **可扩展能力层**：按需发现 Skill 与 MCP Provider，通过权限和 Hook 约束执行，并提供自动化接口，避免将全部能力一次性加载进模型上下文。
 
 ## 功能特性
 
@@ -103,22 +105,51 @@
                     ┌────────────┐
                     │   Final    │
                     └────────────┘
+
+        Automation ────────▶ Runtime ────────▶ Intent Router
+
+        Supervisor / specialist Agent
+                    │
+                    ▼
+            Capability Manager
+                    │
+                    ▼
+          Skill / MCP / Builtin
+                    │
+                    ▼
+            Execution Gateway
+                    │
+                    ├──▶ Tool Policy
+                    ├──▶ Before Hook
+                    ├──▶ Tool execution
+                    └──▶ After Hook / audit
 ```
 
 普通对话会通过 `ChatResponder` 快速响应。创建或修改文件、执行命令、联网搜索、编写代码、
 运行测试、修复错误以及继续工作区任务等请求会进入完整 Agent 工作流。
+工作流 Agent 按需发现 Skill 与 MCP Provider；Automation 作为额外触发入口，复用同一 Runtime 和 Agent 工作流。
+
 ## 项目结构
 
 ```text
 xiliumini/
 ├── src/xiliumini/
 │   ├── agents/       # 专业 Agent 与共用 ReAct 循环
+│   ├── automation/   # 定时任务、持久化与 Runtime 执行器
+│   ├── capabilities/ # Capability Manager、Skill、MCP 与 Meta Tools
 │   ├── cli/          # Typer CLI 与 Textual TUI
 │   ├── core/         # Approval、Checkpoint、Session、Trace
+│   ├── execution/    # Execution Gateway
 │   ├── graph/        # LangGraph 状态、节点、路由与验证
+│   ├── hooks/        # 执行后 Hook
+│   ├── policy/       # 工具权限决策
 │   ├── providers/    # OpenAI 兼容模型适配
 │   ├── storage/      # Session 与 Trace 存储接口
 │   └── tools/        # 文件、搜索、命令、Todo、Notepad 等工具
+├── .xiliumini/
+│   ├── skills/        # 纳入版本管理的 Agent Skill
+│   ├── mcp/<provider>/mcp.json  # 纳入版本管理的 MCP Provider 配置
+│   └── workspaces/    # 本地 Runtime 工作区
 ├── docs/             # 产品、规格、进程、设计与实施文档
 ├── .env.example      # 配置模板
 ├── pyproject.toml    # 项目与依赖配置
@@ -200,6 +231,14 @@ Checkpoint 与 Trace，适合连续完成任务：
 ```powershell
 uv run xiliumini ask "分析当前项目结构并给出改进建议"
 uv run xiliumini ask "计算 (17 + 5) * 3" --no-stream
+```
+
+### 自动化
+
+```powershell
+uv run xiliumini automation add daily-brief --name "每日简报" --prompt "总结 AI 新闻" --daily 09:00
+uv run xiliumini automation list
+uv run xiliumini automation start
 ```
 
 ### 工作区与恢复

@@ -1,12 +1,29 @@
 from __future__ import annotations
 
 import json
+import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from xiliumini.agents.react import create_agent_model, payload, run_react
+from xiliumini.capabilities.langchain_tools import build_meta_tools
+from xiliumini.execution.gateway import wrap_tools
 from xiliumini.prompts import SEARCH_AGENT_PROMPT
 from xiliumini.tools.web_search_tool import WebSearchTool
+
+
+def mcp_source_urls(data: dict) -> list[str]:
+    if data.get("ok") is not True or data.get("is_error") is True:
+        return []
+    content = data.get("text", "")
+    structured = data.get("structured_content")
+    if structured is not None:
+        content += " " + json.dumps(structured, ensure_ascii=False)
+    return list(
+        dict.fromkeys(
+            url.rstrip(".,;)]}\"'") for url in re.findall(r"https?://[^\s<>\"']+", content)
+        )
+    )
 
 
 def run_search_agent(state, instruction, *, writer=None, max_loops=4) -> dict:
@@ -26,7 +43,7 @@ def run_search_agent(state, instruction, *, writer=None, max_loops=4) -> dict:
     try:
         result = run_react(
             create_agent_model(),
-            [WebSearchTool()],
+            wrap_tools([WebSearchTool(), *build_meta_tools(role="search_agent")]),
             messages,
             agent="search_agent",
             attempt=state.get("attempt", 0),
@@ -42,6 +59,17 @@ def run_search_agent(state, instruction, *, writer=None, max_loops=4) -> dict:
         }
     queries, sources, answers = [], [], []
     for event in result["tool_events"]:
+        if event["tool"] == "mcp_call":
+            data = payload(event["output"])
+            if event["ok"]:
+                query = event["args"].get("capability_id")
+                if query and query not in queries:
+                    queries.append(query)
+                answers.append(data.get("text", ""))
+                for url in mcp_source_urls(data):
+                    if url not in sources:
+                        sources.append(url)
+            continue
         if event["tool"] != "web_search":
             continue
         data = payload(event["output"])

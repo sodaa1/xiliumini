@@ -14,7 +14,13 @@ tests/
 .uv-python/
 
 # Runtime data
-.xiliumini/
+.xiliumini/*
+
+# Versioned Agent capabilities
+!.xiliumini/skills/
+!.xiliumini/skills/**
+!.xiliumini/mcp/
+!.xiliumini/mcp/**
 
 # Python caches and build output
 __pycache__/
@@ -39,5 +45,6 @@ Thumbs.db
 .codex/
 .superpowers/
 .worktrees/
+.vendor-src/
 
 project-showcase/

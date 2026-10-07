@@ -236,6 +236,7 @@ def unresolved_failures(events: list[dict[str, Any]]) -> bool:
                     "-v",
                     "--verbose",
                     "-x",
+                    "-rf",
                     "--exitfirst",
                     "--disable-warnings",
                 }

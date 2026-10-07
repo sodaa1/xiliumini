@@ -8,6 +8,8 @@ from langgraph.config import get_stream_writer
 from pydantic import BaseModel, Field, StrictBool
 
 from xiliumini.agents.react import content_text, run_react
+from xiliumini.capabilities.langchain_tools import build_meta_tools
+from xiliumini.execution.gateway import active_run, wrap_tools
 from xiliumini.graph.memory import MemoryManager
 from xiliumini.graph.verification import requirements_failure
 from xiliumini.prompts import FINAL_PROMPT, PLANNER_NODE_PROMPT, VERIFIER_NODE_PROMPT
@@ -163,12 +165,15 @@ def planner_node(
 
     result = run_react(
         model,
-        [
-            TodoWriteTool(workspace=state["workspace"]),
-            CallSearchAgentTool(context=context, writer=writer),
-            CallCodeAgentTool(context=context, writer=writer),
-            PreferenceWriteTool(store=memory_manager.preference_store),
-        ],
+        wrap_tools(
+            [
+                TodoWriteTool(workspace=state["workspace"]),
+                CallSearchAgentTool(context=context, writer=writer),
+                CallCodeAgentTool(context=context, writer=writer),
+                PreferenceWriteTool(store=memory_manager.preference_store),
+                *build_meta_tools(role="planner"),
+            ]
+        ),
         messages,
         agent="planner",
         attempt=current["attempt"],
@@ -237,6 +242,9 @@ def planner_node(
 def verifier_node(state, *, model: Any, memory_manager: MemoryManager) -> dict[str, Any]:
     current = {**state, "current_node": "verifier"}
     reason = requirements_failure(state)
+    run_context = active_run.get()
+    if reason is None and run_context is not None and run_context.hook_failures:
+        reason = "Blocking hook failed: " + ", ".join(run_context.hook_failures)
     status = "failed"
     if reason is None:
         current["memory"] = memory_manager.assemble(current, current_node="verifier")

@@ -24,6 +24,7 @@ from xiliumini.events import (
     RuntimeEvent,
     VerifierEvent,
 )
+from xiliumini.execution.gateway import ExecutionGateway, active_run
 from xiliumini.graph.state import GraphState
 from xiliumini.graph.workflow import build_workflow
 
@@ -129,6 +130,13 @@ def stream_agent(
             trace_recorder.start(
                 deepcopy(latest_state), resumed=resumed, resume_event=deepcopy(resume_event)
             )
+        run_context = active_run.get()
+        if run_context is not None and run_context.hook_engine is not None:
+            for hook_event in run_context.hook_engine.lifecycle(
+                "run.start", context=run_context, gateway=ExecutionGateway()
+            ):
+                if run_context.event_sink is not None:
+                    run_context.event_sink(hook_event)
         save("started")
         workflow = build_workflow(model, memory_manager, checkpointer=checkpointer)
         chunks = workflow.stream(
@@ -197,6 +205,22 @@ def stream_agent(
             if status == "failed":
                 try:
                     trace_recorder.record_custom_event({"type": "error", "message": "Run failed."})
+                except BaseException as error:
+                    if failure is None:
+                        failure = error
+            run_context = active_run.get()
+            if run_context is not None and run_context.hook_engine is not None:
+                terminal = (
+                    "run.success"
+                    if status == "completed" and latest_state.get("graph_state") == "passed"
+                    else "run.failure"
+                )
+                try:
+                    for hook_event in run_context.hook_engine.lifecycle(
+                        terminal, context=run_context, gateway=ExecutionGateway()
+                    ):
+                        if run_context.event_sink is not None:
+                            run_context.event_sink(hook_event)
                 except BaseException as error:
                     if failure is None:
                         failure = error

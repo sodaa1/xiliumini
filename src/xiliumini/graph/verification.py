@@ -1,14 +1,50 @@
 from __future__ import annotations
 
 import re
+import sqlite3
+from pathlib import Path
 
 from xiliumini.agents.react import payload, unresolved_failures
+
+
+def _persisted_automation(state) -> bool:
+    workspace = Path(state["workspace"])
+    if workspace.parent.name != "workspaces":
+        return False
+    database = workspace.parent.parent / "automation.sqlite3"
+    if not database.is_file():
+        return False
+    for event in state["tool_events"]:
+        if event["agent"] != "planner" or event["tool"] != "automation_manage" or not event["ok"]:
+            continue
+        data = payload(event["output"])
+        identifier = data.get("id")
+        if not isinstance(identifier, str) or not data.get("persisted"):
+            continue
+        try:
+            with sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True) as db:
+                if db.execute("SELECT 1 FROM automations WHERE id = ?", (identifier,)).fetchone():
+                    return True
+        except sqlite3.Error:
+            return False
+    return False
 
 
 def requirements_failure(state) -> str | None:
     if not state.get("supervisor_ok", False):
         return "Supervisor did not finish a valid round"
     task = state["task"].lower()
+    automation_intent = bool(
+        re.search(r"automation|scheduled? task|定时任务|自动任务|每日任务|提醒", task)
+    )
+    code_intent = bool(
+        re.search(
+            r"python|code|implement|build|fix|edit|pytest|test|文件|代码|编写|实现|修复|修改|测试",
+            task,
+        )
+    )
+    if automation_intent and not code_intent:
+        return None if _persisted_automation(state) else "Missing persisted automation evidence"
     preference_events = [
         event
         for event in state["tool_events"]

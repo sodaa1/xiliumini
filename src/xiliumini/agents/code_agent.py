@@ -5,12 +5,14 @@ import json
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from xiliumini.agents.react import create_agent_model, run_react, unresolved_failures
+from xiliumini.capabilities.langchain_tools import build_meta_tools
+from xiliumini.execution.gateway import wrap_tools
 from xiliumini.prompts import CODE_AGENT_PROMPT
 from xiliumini.tools import build_tools
 from xiliumini.tools.todo import TodoStore, TodoUpdateTool
 
 
-def run_code_agent(state, instruction, *, writer=None, max_loops=10) -> dict:
+def run_code_agent(state, instruction, *, writer=None, max_loops=20) -> dict:
     messages = []
     result = {
         "ok": False,
@@ -38,7 +40,13 @@ def run_code_agent(state, instruction, *, writer=None, max_loops=10) -> dict:
         )
         result = run_react(
             create_agent_model(),
-            [*build_tools(state), TodoUpdateTool(workspace=state["workspace"])],
+            wrap_tools(
+                [
+                    *build_tools(state),
+                    TodoUpdateTool(workspace=state["workspace"]),
+                    *build_meta_tools(role="code_agent"),
+                ]
+            ),
             messages,
             agent="code_agent",
             attempt=state.get("attempt", 0),

@@ -1,0 +1,21 @@
+{
+  "servers": {
+    "aihot": {
+      "enabled": true,
+      "transport": "http",
+      "url": "https://aihot.news/api/mcp",
+      "trust": "explicit",
+      "permissions": ["network.read"],
+      "tool_allowlist": [
+        "aihot_get_latest",
+        "aihot_search",
+        "aihot_get_hot_topics",
+        "aihot_get_story",
+        "aihot_get_daily",
+        "aihot_get_weekly",
+        "aihot_get_monthly",
+        "aihot_get_codex_resets"
+      ]
+    }
+  }
+}
